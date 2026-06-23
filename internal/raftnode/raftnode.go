@@ -148,6 +148,17 @@ func (n *Node) RemoveServer(id string) error {
 	return fut.Error()
 }
 
+// Snapshot forces a snapshot of the local FSM immediately, bypassing the
+// SnapshotThreshold gate (raft's runSnapshots only snapshots when log delta
+// >= threshold; this calls the user-triggered path). Works on any node —
+// snapshot is a local FSM operation, not leader-only. Used by the
+// POST /cluster/snapshot API and for periodic log truncation in low-write
+// deployments where the threshold is rarely reached.
+func (n *Node) Snapshot() error {
+	fut := n.raft.Snapshot()
+	return fut.Error()
+}
+
 func (n *Node) Raft() *raft.Raft { return n.raft }
 
 // Transport returns the underlying raft.Transport. Test harnesses use this to

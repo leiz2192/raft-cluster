@@ -23,6 +23,8 @@
     curl 'http://127.0.0.1:8001/kv?prefix=/nodes/'
     # 集群状态
     curl http://127.0.0.1:8001/cluster/status
+    # 手动触发快照（绕过阈值，截断日志；低写入场景可由外部定时器周期调用）
+    curl -X POST http://127.0.0.1:8001/cluster/snapshot
 
 ## 容灾
 

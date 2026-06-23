@@ -86,6 +86,7 @@ Raft 在 3 节点中选举出 1 个 leader（主）+ 2 个 follower（从）：
 **容灾替换：集群成员 API**
 - `/cluster/join` → leader 调 `raft.AddVoter`（加入新节点）
 - `/cluster/remove` → leader 调 `raft.RemoveServer`（移除死节点）
+- `/cluster/snapshot` → 手动触发快照（绕过阈值，任意节点可调，见 §4.3）
 - 专门服务于容灾场景下替换永久丢失的节点；日常固定 3 节点不涉及
 
 **为何不用纯动态加入（模式 B）**：固定 3 节点用联合引导最简单健壮，2 节点即 2/3 多数派；纯动态加入的 2 节点启动会经历"先 1 节点（1/1 无容错）再加第 2 个"的脆弱期。同时保留成员 API 以备容灾替换，取两者之长。
@@ -236,7 +237,9 @@ api 判断本节点是否 leader
 
 ### 4.3 快照路径（Snapshot）
 
-触发：日志条数达阈值（默认 1024）或定时（默认每 10 分钟），raft 自动发起。
+触发机制（hashicorp/raft 内置 `runSnapshots` goroutine）：该 goroutine 每 `SnapshotInterval`（默认 10 分钟，带随机抖动）醒来一次做**检测**——仅当自上次快照以来的日志增量 `lastLogIndex - lastSnapshotIndex ≥ SnapshotThreshold`（默认 1024）时才真正调 `takeSnapshot()`；定时器到期本身不独立触发快照，只是轮询周期，阈值未到则跳过。另可经 `POST /cluster/snapshot`（或直接 `Raft.Snapshot()`）绕过阈值立即快照。
+
+> 注：元数据存储写入频率低，日志增量常期达不到 1024，自动快照几乎不触发、日志不被截断。需要定期截断日志时，由外部定时器周期性调 `POST /cluster/snapshot`（与 raft 阈值无关）。
 ```
 raft 触发 → fsm.Snapshot() 返回 FSMSnapshot
    │
@@ -314,7 +317,7 @@ FSM 状态恢复到故障前最后提交点 → 节点加入集群/参与选举
 - 配置非法（端口冲突、peer 列表不全 3 个）→ 启动前校验失败退出
 
 ### 5.8 资源与背压
-- Apply 慢导致日志堆积：raft 配置 `SnapshotThreshold` 触发快照截断，避免日志无限增长
+- 日志堆积：日志增量达 `SnapshotThreshold` 触发快照截断；低写入场景阈值不易达到，可经 `POST /cluster/snapshot` 主动触发截断，避免日志无限增长
 - 客户端并发写过大：HTTP 层加 `maxInflight` 限流（默认 256），超出返回 `429`
 
 ### 5.9 单节点数据损坏修复
@@ -407,7 +410,7 @@ FSM 状态恢复到故障前最后提交点 → 节点加入集群/参与选举
 - **选主**：启动后唯一 leader；杀 leader 后新 leader 在选举超时内选出
 - **写复制**：写 leader → 3 节点 FSM 状态一致
 - **读语义**：follower 本地读可能脏、leader 本地读强一致、`?consistent=true` 重定向
-- **快照**：触发 `SnapshotThreshold` 后快照生成、日志截断、状态不变
+- **快照**：`POST /cluster/snapshot` 手动触发生成、日志截断、状态不变（自动阈值触发在低写入测试中不易复现）
 - **重启恢复**：Shutdown 一节点 → 重启 → Restore + 日志重放 → 状态追平
 - **成员变更**：AddVoter 加入新节点、RemoveServer 移除节点
 

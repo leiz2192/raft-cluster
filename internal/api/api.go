@@ -30,6 +30,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/cluster/status", a.handleClusterStatus)
 	mux.HandleFunc("/cluster/join", a.handleJoin)
 	mux.HandleFunc("/cluster/remove", a.handleRemove)
+	mux.HandleFunc("/cluster/snapshot", a.handleSnapshot)
 	return mux
 }
 
@@ -154,6 +155,21 @@ func (a *API) handleRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// handleSnapshot triggers a local FSM snapshot on demand, bypassing the raft
+// SnapshotThreshold gate. Works on any node (snapshot is local, not
+// leader-only). Useful for periodic log truncation in low-write deployments.
+func (a *API) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := a.node.Snapshot(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "snapshot taken"})
 }
 
 func (a *API) writeWriteError(w http.ResponseWriter, err error) {
