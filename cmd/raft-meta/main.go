@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/hashicorp/go-hclog"
 	"raft-meta/internal/config"
+	"raft-meta/internal/raftnode"
 	"raft-meta/internal/server"
 )
 
@@ -39,9 +41,18 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
-	case "reset", "recover":
-		fmt.Fprintln(os.Stderr, "error:", sub, "not yet implemented (see Task 9)")
-		os.Exit(1)
+	case "reset":
+		if err := raftnode.Reset(cfg.DataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("data directory cleared:", cfg.DataDir)
+	case "recover":
+		if err := raftnode.RecoverClusterSingle(cfg, hclog.New(&hclog.LoggerOptions{Name: "recover", Level: hclog.Info})); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("cluster recovered to single-node:", cfg.NodeID)
 	default:
 		usage()
 		os.Exit(2)
