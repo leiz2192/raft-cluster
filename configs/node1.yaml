@@ -10,3 +10,10 @@ snapshot:
   type: file
   path: ./data/node1/snapshots
   retain: 3
+log:
+  file: ./data/node1/raft-meta.log
+  level: info
+  json: true
+  maxSize: 100
+  maxBackups: 7
+  maxAge: 30

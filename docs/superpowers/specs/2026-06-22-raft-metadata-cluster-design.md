@@ -206,6 +206,17 @@ logStore:
 
 状态类指标用"抓取时读"的自定义 collector（无递增事件可挂），操作类指标在调用点递增。`metrics.Metrics` 对 `store`/`api` 是可选注入（nil-safe），`server.Run` 装配时创建并注入。
 
+### 3.6 业务日志
+
+业务日志用 hclog（`raft.Config.Logger` 类型即 `hclog.Logger`，故 raft 自身的选举/复制/快照日志与应用日志走同一 logger、同格式、同输出）。新增 `internal/logging` 工厂 `NewLogger(cfg.Log, name)`：
+
+- `log.file` 空 → 写 stderr（保持旧行为）
+- `log.file` 设 → 落文件，经 `lumberjack` 轮转（`maxSize` MB / `maxBackups` 份 / `maxAge` 天，旧份 gzip 压缩）；父目录自动创建
+- `log.json: true` → JSON 格式（`@level`/`@message`/`@module`/`@timestamp` + 结构化字段，便于 ELK/Loki 解析）
+- `log.level` → trace/debug/info/warn/error；空或非法回退 info
+
+`server.Run`/`server.Init` 用 `logging.NewLogger(cfg.Log, ...)` 替代内联 `hclog.New`，其余不变。
+
 ---
 
 ## 4. 数据流

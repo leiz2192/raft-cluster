@@ -8,10 +8,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
 	"raft-meta/internal/api"
 	"raft-meta/internal/config"
 	"raft-meta/internal/fsm"
+	"raft-meta/internal/logging"
 	"raft-meta/internal/metrics"
 	"raft-meta/internal/raftnode"
 	"raft-meta/internal/store"
@@ -19,10 +19,7 @@ import (
 
 // Run builds and runs a node: raft + HTTP server, blocks until SIGINT/SIGTERM.
 func Run(cfg *config.Config) error {
-	logger := hclog.New(&hclog.LoggerOptions{
-		Name:  cfg.NodeID,
-		Level: hclog.Info,
-	})
+	logger := logging.NewLogger(cfg.Log, cfg.NodeID)
 
 	f := fsm.New()
 	n, err := raftnode.New(cfg, f, logger)
@@ -65,7 +62,7 @@ func Run(cfg *config.Config) error {
 
 // Init bootstraps the cluster from the given config (call once, on one node).
 func Init(cfg *config.Config) error {
-	logger := hclog.New(&hclog.LoggerOptions{Name: cfg.NodeID + "-init", Level: hclog.Info})
+	logger := logging.NewLogger(cfg.Log, cfg.NodeID+"-init")
 	f := fsm.New()
 	n, err := raftnode.New(cfg, f, logger)
 	if err != nil {

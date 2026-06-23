@@ -20,6 +20,7 @@
 - `peers`：3 节点 voter 列表（联合引导用）
 - `snapshot.type`：快照存储后端（`file` | `inmem`；`file` 落 `snapshot.path`）
 - `logStore.type`：raft log/stable store 后端（`inmem` | `boltdb` | `rocksdb`(预留)）；留空则按 `dataDir` 自动选（有 `dataDir`=`boltdb`，无=`inmem`）
+- `log`：业务日志。`file` 空 → 写 stderr（旧行为）；设了 `file` → 落文件并按 lumberjack 轮转（`maxSize` MB / `maxBackups` 份 / `maxAge` 天，gzip 压缩旧份）。`json: true` → JSON 格式（便于 ELK/Loki 解析）。`level` 空=info。raft 自身日志（选举/复制/快照）走同一 logger、同文件。
 
 ## 操作
 

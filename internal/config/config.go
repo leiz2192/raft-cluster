@@ -23,6 +23,16 @@ type LogStoreConfig struct {
 	Type string `yaml:"type"` // inmem | boltdb | rocksdb (future); 空 → 按 dataDir 自动选
 }
 
+// LogConfig configures business logging (hclog). File empty → stderr (旧行为).
+type LogConfig struct {
+	File       string `yaml:"file"`       // 日志文件路径；空则写 stderr
+	Level      string `yaml:"level"`      // trace/debug/info/warn/error；空=info
+	JSON       bool   `yaml:"json"`       // JSON 格式
+	MaxSize    int    `yaml:"maxSize"`    // MB，轮转阈值；空=100
+	MaxBackups int    `yaml:"maxBackups"` // 保留份数；空=7
+	MaxAge     int    `yaml:"maxAge"`     // 保留天数；空=30
+}
+
 type Config struct {
 	NodeID            string          `yaml:"nodeID"`
 	RaftAddr          string          `yaml:"raftAddr"`
@@ -31,6 +41,7 @@ type Config struct {
 	Peers             []Peer          `yaml:"peers"`
 	Snapshot          SnapshotConfig  `yaml:"snapshot"`
 	LogStore          LogStoreConfig  `yaml:"logStore"`
+	Log               LogConfig       `yaml:"log"`
 	UseInmemTransport bool            `yaml:"-"`
 }
 
