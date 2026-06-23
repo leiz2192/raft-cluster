@@ -150,6 +150,11 @@ func (n *Node) RemoveServer(id string) error {
 
 func (n *Node) Raft() *raft.Raft { return n.raft }
 
+// Transport returns the underlying raft.Transport. Test harnesses use this to
+// wire inmem transports together (InmemTransport peers are isolated until
+// Connect is called); production code rarely needs it.
+func (n *Node) Transport() raft.Transport { return n.trans }
+
 func (n *Node) Shutdown() error {
 	if n.raft == nil {
 		return nil
