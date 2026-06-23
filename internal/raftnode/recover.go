@@ -65,27 +65,22 @@ func RecoverClusterSingle(cfg *config.Config, logger hclog.Logger) error {
 		}},
 	}
 
-	// raft.RecoverCluster refuses to run when there is no existing state
-	// (empty log + no snapshots + currentTerm==0), as an operator-error guard.
-	// For the DR "force single-node" path we explicitly intend to (re)initialize
-	// this node as a single-node cluster, so seed currentTerm=1 to satisfy the
-	// guard. This mirrors what raft.BootstrapCluster does on a fresh dir. On a
-	// node that already has state, HasExistingState is already true and this
-	// SetUint64 is a harmless no-op overwrite of an equal-or-smaller term.
 	hasState, err := raft.HasExistingState(boltStore, boltStore, snaps)
 	if err != nil {
 		return fmt.Errorf("check existing state: %w", err)
 	}
-	if !hasState {
-		if err := boltStore.SetUint64([]byte("CurrentTerm"), 1); err != nil {
-			return fmt.Errorf("seed current term: %w", err)
+	if hasState {
+		// Real DR: node has existing (partial/corrupted) state.
+		// Force single-node config, restore latest snapshot, replay log to commitIndex.
+		if err := raft.RecoverCluster(raftCfg, fsm.New(), boltStore, boltStore, snaps, trans, configuration); err != nil {
+			return fmt.Errorf("recover cluster: %w", err)
 		}
-	}
-
-	// RecoverCluster 加载最新快照 → Restore FSM → 重放日志到 commitIndex →
-	// 把配置强制改写为单节点。
-	if err := raft.RecoverCluster(raftCfg, fsm.New(), boltStore, boltStore, snaps, trans, configuration); err != nil {
-		return fmt.Errorf("recover cluster: %w", err)
+	} else {
+		// Fresh dir: initialize as single-node cluster via the public BootstrapCluster API
+		// (no private-key coupling). RecoverCluster's guard rejects fresh dirs by design.
+		if err := raft.BootstrapCluster(raftCfg, boltStore, boltStore, snaps, trans, configuration); err != nil {
+			return fmt.Errorf("bootstrap cluster: %w", err)
+		}
 	}
 	return nil
 }
