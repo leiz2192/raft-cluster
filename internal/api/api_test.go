@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,8 +11,10 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"raft-meta/internal/config"
 	"raft-meta/internal/fsm"
+	"raft-meta/internal/metrics"
 	"raft-meta/internal/raftnode"
 	"raft-meta/internal/store"
 )
@@ -38,7 +41,10 @@ func newAPI(t *testing.T) (*API, *fsm.FSM) {
 	for time.Now().Before(deadline) && !n.IsLeader() {
 		time.Sleep(20 * time.Millisecond)
 	}
-	return New(store.New(n, f, 2*time.Second), n), f
+	s := store.New(n, f, 2*time.Second)
+	m := metrics.New(n, f)
+	s.SetMetrics(m)
+	return New(s, n, m), f
 }
 
 func TestPutAndGet(t *testing.T) {
@@ -227,4 +233,83 @@ func TestSnapshotTrigger(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("last_snapshot_index still 0 after trigger; stats=%v", api.node.Stats())
+}
+
+// TestMetricsEndpoint 验证 /metrics 暴露 Prometheus 格式指标，含关键名。
+func TestMetricsEndpoint(t *testing.T) {
+	api, _ := newAPI(t)
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	// 触发一些操作，让计数器非零。
+	body, _ := json.Marshal(map[string]string{"value": "v"})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/kv/m1", bytes.NewReader(body))
+	r, _ := http.DefaultClient.Do(req)
+	r.Body.Close()
+	http.Get(srv.URL + "/kv/m1")
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/metrics status = %d", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	s := string(data)
+	for _, want := range []string{
+		"raft_meta_kv_ops_total",
+		"raft_meta_is_leader",
+		"raft_meta_fsm_keys",
+		"raft_meta_http_requests_total",
+		"raft_meta_commit_index",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("/metrics missing %q", want)
+		}
+	}
+}
+
+// TestClusterStatusEnriched 验证 /cluster/status 含 metrics 扩展字段。
+func TestClusterStatusEnriched(t *testing.T) {
+	api, _ := newAPI(t)
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/cluster/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&got)
+	for _, k := range []string{"is_leader", "fsm_keys", "peers", "commit_index"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("/cluster/status missing %q; got keys: %v", k, got)
+		}
+	}
+}
+
+// TestSnapshotIncrementsCounter 验证手动快照递增 snapshot_triggers_total。
+func TestSnapshotIncrementsCounter(t *testing.T) {
+	api, _ := newAPI(t)
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{"value": "v"})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/kv/sc", bytes.NewReader(body))
+	r, _ := http.DefaultClient.Do(req)
+	r.Body.Close()
+
+	before := testutil.ToFloat64(api.metrics.SnapshotsCounter())
+	resp, err := http.Post(srv.URL+"/cluster/snapshot", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	after := testutil.ToFloat64(api.metrics.SnapshotsCounter())
+	if after != before+1 {
+		t.Fatalf("snapshot counter %v -> %v, want +1", before, after)
+	}
 }

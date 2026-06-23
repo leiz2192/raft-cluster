@@ -35,6 +35,19 @@
     # 手动触发快照（绕过阈值，截断日志；低写入场景可由外部定时器周期调用）
     curl -X POST http://127.0.0.1:8001/cluster/snapshot
 
+## 监控指标
+
+`/metrics` 暴露 Prometheus 格式指标（Prometheus/Grafana 可直接抓取）。`/cluster/status` 也含 `is_leader`/`fsm_keys`/`peers`/`commit_index` 等扩展字段供人查看。
+
+主要指标（前缀 `raft_meta_`）：
+
+- 状态 gauge：`is_leader`、`raft_term`、`commit_index`、`applied_index`、`last_log_index`、`last_snapshot_index`、`fsm_keys`、`peers`
+- KV 操作：`kv_ops_total{op}`、`kv_op_errors_total{op}`、`kv_apply_duration_seconds{op}`（put/delete）、`kv_read_duration_seconds{op}`（get/list）
+- 快照：`snapshot_triggers_total`（手动触发次数）
+- HTTP：`http_requests_total{method,code}`、`http_request_duration_seconds{method}`
+
+    curl http://127.0.0.1:8001/metrics
+
 ## 容灾
 
 **单节点数据损坏**（另 2 个健康，零丢失）：

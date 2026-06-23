@@ -7,22 +7,26 @@ import (
 	"net/http"
 	"strings"
 
+	"raft-meta/internal/metrics"
 	"raft-meta/internal/raftnode"
 	"raft-meta/internal/store"
 )
 
 // API exposes the store and raft node over HTTP.
 type API struct {
-	store *store.Store
-	node  *raftnode.Node
+	store   *store.Store
+	node    *raftnode.Node
+	metrics *metrics.Metrics // nil-safe: routes still work, /metrics skipped
 }
 
-// New builds an API backed by the given store and raft node.
-func New(s *store.Store, n *raftnode.Node) *API {
-	return &API{store: s, node: n}
+// New builds an API backed by the given store, raft node, and metrics.
+func New(s *store.Store, n *raftnode.Node, m *metrics.Metrics) *API {
+	return &API{store: s, node: n, metrics: m}
 }
 
-// Handler returns the HTTP handler serving /kv and /cluster routes.
+// Handler returns the HTTP handler serving /kv, /cluster, and /metrics routes.
+// When metrics is wired, /metrics is served and all routes are wrapped in the
+// HTTP instrumentation middleware.
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/kv/", a.handleKV)
@@ -31,7 +35,12 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/cluster/join", a.handleJoin)
 	mux.HandleFunc("/cluster/remove", a.handleRemove)
 	mux.HandleFunc("/cluster/snapshot", a.handleSnapshot)
-	return mux
+	var h http.Handler = mux
+	if a.metrics != nil {
+		mux.Handle("/metrics", a.metrics.PrometheusHandler())
+		h = a.metrics.HTTPMiddleware(mux)
+	}
+	return h
 }
 
 type kvBody struct {
@@ -102,12 +111,18 @@ func (a *API) handleKVList(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 	stats := a.node.Stats()
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	out := map[string]interface{}{
 		"nodeID": stats["node_id"],
 		"state":  a.node.State().String(),
 		"leader": a.node.LeaderAddr(),
 		"stats":  stats,
-	})
+	}
+	if a.metrics != nil {
+		for k, v := range a.metrics.StatusMap() {
+			out[k] = v
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type memberBody struct {
@@ -168,6 +183,9 @@ func (a *API) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if err := a.node.Snapshot(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if a.metrics != nil {
+		a.metrics.ObserveSnapshot()
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "snapshot taken"})
 }

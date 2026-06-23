@@ -12,6 +12,7 @@ import (
 	"raft-meta/internal/api"
 	"raft-meta/internal/config"
 	"raft-meta/internal/fsm"
+	"raft-meta/internal/metrics"
 	"raft-meta/internal/raftnode"
 	"raft-meta/internal/store"
 )
@@ -31,7 +32,9 @@ func Run(cfg *config.Config) error {
 	defer n.Shutdown()
 
 	s := store.New(n, f, 5*time.Second)
-	a := api.New(s, n)
+	m := metrics.New(n, f)
+	s.SetMetrics(m)
+	a := api.New(s, n, m)
 	httpSrv := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: a.Handler(),

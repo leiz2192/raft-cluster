@@ -61,6 +61,13 @@ func (f *FSM) List(prefix string) map[string][]byte {
 	return out
 }
 
+// Len returns the number of keys in the FSM (for monitoring/metrics).
+func (f *FSM) Len() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return len(f.data)
+}
+
 // snapshotData is the serialized form of the FSM for snapshots.
 type snapshotData struct {
 	Data map[string][]byte `json:"data"`

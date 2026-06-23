@@ -192,6 +192,20 @@ logStore:
 
 工厂 `NewStores(cfg, dataDir, logger) (raft.LogStore, raft.StableStore, io.Closer, error)` 一次返回 log 与 stable 两个 store（通常同一后端，如 BoltDB 的一个 handle 同时实现两个接口）外加一个 `io.Closer`（inmem 为 nil，boltdb 为 store 本身，Shutdown 时关闭释放文件锁）。空 `type` 按 `dataDir` 自动选择，保持不带 `logStore` 字段的旧配置行为不变。后端与 FSM 序列化、与 snapshot 后端均正交，各自独立演进。`raftnode` 只依赖 `raft.LogStore`/`raft.StableStore` 接口，不感知具体后端。
 
+### 3.5 监控指标（metrics）
+
+新增 `internal/metrics` 包，用 `prometheus/client_golang` 暴露两类监控：
+
+**Prometheus `/metrics`**（Prometheus/Grafana 抓取用），前缀 `raft_meta_`：
+- 状态 gauge（自定义 collector 在抓取时读 `raft.Stats()` + FSM）：`is_leader`、`raft_term`、`commit_index`、`applied_index`、`last_log_index`、`last_snapshot_index`、`fsm_keys`、`peers`
+- KV 操作计数/延迟（在 `store` 埋点）：`kv_ops_total{op}`、`kv_op_errors_total{op}`、`kv_apply_duration_seconds{op}`（put/delete 走 raft.Apply）、`kv_read_duration_seconds{op}`（get/list 本地读）
+- 快照：`snapshot_triggers_total`（手动 `POST /cluster/snapshot` 次数）
+- HTTP：`http_requests_total{method,code}`、`http_request_duration_seconds{method}`（HTTP 中间件埋点，包整个 mux）
+
+**JSON `/cluster/status`**（人看）：在原有 `state`/`leader`/`stats` 基础上扩展 `is_leader`、`fsm_keys`、`peers`、`term`、`commit_index`、`applied_index`、`last_snapshot_index`。
+
+状态类指标用"抓取时读"的自定义 collector（无递增事件可挂），操作类指标在调用点递增。`metrics.Metrics` 对 `store`/`api` 是可选注入（nil-safe），`server.Run` 装配时创建并注入。
+
 ---
 
 ## 4. 数据流
