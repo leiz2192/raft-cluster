@@ -849,7 +849,80 @@ func TestSingleNodeBootstrapAndApply(t *testing.T) {
 		t.Error("LeaderAddr empty")
 	}
 }
+
+// TestBoltDBPersistenceRoundtrip verifies the spec's core DR guarantee:
+// 已提交数据在重启后零丢失。用 inmem transport + 真实 BoltDB log/stable +
+// 文件快照，写→强制快照→shutdown→用同数据目录重建→验证数据存活。
+// 这覆盖 spec §1.4/§5.9 的"零丢失"成功标准。
+func TestBoltDBPersistenceRoundtrip(t *testing.T) {
+	log := hclog.NewNullLogger()
+	dir := t.TempDir()
+	mkcfg := func() *config.Config {
+		return &config.Config{
+			NodeID:   "p1",
+			RaftAddr: "127.0.0.1:7501",
+			DataDir:  dir,
+			Peers:    []config.Peer{{ID: "p1", Addr: "127.0.0.1:7501"}},
+			Snapshot:          config.SnapshotConfig{Type: "file", Path: filepath.Join(dir, "snaps"), Retain: 1},
+			UseInmemTransport: true,
+		}
+	}
+
+	// 第一次启动：写入并强制快照。
+	f1 := fsm.New()
+	n1, err := New(mkcfg(), f1, log)
+	if err != nil {
+		t.Fatalf("New(1): %v", err)
+	}
+	if err := n1.BootstrapCluster(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !n1.IsLeader() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !n1.IsLeader() {
+		t.Fatal("not leader")
+	}
+	cmd, _ := fsm.EncodeCommand(&fsm.Command{Op: fsm.OpPut, Key: "persisted", Value: []byte("yes")})
+	if err := n1.Apply(cmd, 2*time.Second).Error(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// 强制快照，验证快照路径也能持久化（不止日志）。
+	if err := n1.Raft().Snapshot().Error(); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := n1.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	// 第二次启动：同数据目录，不重新引导（已引导过）。
+	f2 := fsm.New()
+	n2, err := New(mkcfg(), f2, log)
+	if err != nil {
+		t.Fatalf("New(2): %v", err)
+	}
+	defer n2.Shutdown()
+	if err := n2.BootstrapCluster(); err != nil {
+		t.Fatalf("Bootstrap(2): %v", err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !n2.IsLeader() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	// 等待 Restore + 日志重放完成。
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if v, ok := f2.Get("persisted"); ok && string(v) == "yes" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("persisted data lost after restart: got %q", f2.Get)
+}
 ```
+
+Add `"path/filepath"` to the test file imports.
 
 - [ ] **Step 3: 跑测试确认失败**
 
@@ -888,8 +961,12 @@ type Node struct {
 	logger hclog.Logger
 }
 
-// New constructs a Node. If cfg.UseInmemTransport is true, uses inmem transport
-// and inmem log/stable stores (for tests); otherwise uses TCP + BoltDB.
+// New constructs a Node. Transport and persistence are decoupled:
+//   - transport: inmem when cfg.UseInmemTransport, else TCP
+//   - persistence: BoltDB (log+stable) + cfg.Snapshot store when cfg.DataDir != "",
+//     else inmem log/stable + cfg.Snapshot store
+// This lets tests use inmem transport with real BoltDB persistence to verify
+// snapshot/log durability across restarts.
 func New(cfg *config.Config, f *fsm.FSM, logger hclog.Logger) (*Node, error) {
 	raftCfg := raft.DefaultConfig()
 	raftCfg.LocalID = raft.ServerID(cfg.NodeID)
@@ -899,45 +976,44 @@ func New(cfg *config.Config, f *fsm.FSM, logger hclog.Logger) (*Node, error) {
 
 	n := &Node{cfg: cfg, fsm: f, logger: logger}
 
+	// --- transport ---
 	if cfg.UseInmemTransport {
 		trans, err := raft.NewInmemTransport(raft.ServerAddress(cfg.RaftAddr))
 		if err != nil {
 			return nil, err
 		}
 		n.trans = trans
-		n.logs = raft.NewInmemStore()
-		n.stable = raft.NewInmemStore()
-		snaps, err := snapshot.NewStore(cfg.Snapshot, logger)
-		if err != nil {
-			return nil, err
-		}
-		n.snaps = snaps
 		raftCfg.HeartbeatTimeout = 200 * time.Millisecond
 		raftCfg.ElectionTimeout = 200 * time.Millisecond
 		raftCfg.CommitTimeout = 50 * time.Millisecond
 	} else {
-		if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-			return nil, fmt.Errorf("mkdir dataDir: %w", err)
-		}
 		trans, err := raft.NewTCPTransport(cfg.RaftAddr, nil, 3, 10*time.Second, logger.StandardLogger(&hclog.StandardLoggerOptions{}))
 		if err != nil {
 			return nil, fmt.Errorf("tcp transport: %w", err)
 		}
 		n.trans = trans
-		boltPath := filepath.Join(cfg.DataDir, "raft.db")
+	}
+
+	// --- persistence ---
+	if cfg.DataDir != "" {
+		if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+			return nil, fmt.Errorf("mkdir dataDir: %w", err)
+		}
 		boltStore, err := raftboltdb.NewBoltStore(filepath.Join(cfg.DataDir, "raft.db"))
-		_ = boltPath
 		if err != nil {
 			return nil, fmt.Errorf("bolt store: %w", err)
 		}
 		n.stable = boltStore
 		n.logs = boltStore
-		snaps, err := snapshot.NewStore(cfg.Snapshot, logger)
-		if err != nil {
-			return nil, err
-		}
-		n.snaps = snaps
+	} else {
+		n.logs = raft.NewInmemStore()
+		n.stable = raft.NewInmemStore()
 	}
+	snaps, err := snapshot.NewStore(cfg.Snapshot, logger)
+	if err != nil {
+		return nil, err
+	}
+	n.snaps = snaps
 
 	r, err := raft.NewRaft(raftCfg, f, n.logs, n.stable, n.snaps, n.trans)
 	if err != nil {
@@ -2405,19 +2481,299 @@ Expected: 构建通过，全部测试 PASS
 
 ---
 
+### Task 13: HTTP 端到端测试（真实 3 进程集群）
+
+**Files:**
+- Create: `e2e/cluster_e2e_test.go`
+- Create: `e2e/helper.go`
+
+**Interfaces:**
+- Consumes: 已构建的 `raft-meta` 二进制（`go build ./cmd/raft-meta`）、`configs/node*.yaml`（Task 8）
+- 产出：覆盖 spec §6.4：真实 3 进程集群，curl 写/读/重定向，kill leader 验证客户端重试落新主
+
+- [ ] **Step 1: 写 e2e helper**
+
+Create `e2e/helper.go`:
+```go
+package e2e
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// proc wraps a running raft-meta node process.
+type proc struct {
+	cmd *exec.Cmd
+	id  string
+}
+
+// startCluster builds the binary once and starts 3 nodes with the given
+// temporary data root. Returns the 3 procs and a cleanup func.
+func startCluster(t *testing.T, bin string, dataRoot string) ([]*proc, func()) {
+	t.Helper()
+	// 写 3 份临时配置（端口用 9001-3 raft / 10001-3 http，避免与开发端口冲突）。
+	cfgs := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("node%d", i+1)
+		dir := filepath.Join(dataRoot, id)
+		os.MkdirAll(filepath.Join(dir, "snaps"), 0755)
+		path := filepath.Join(dataRoot, id+".yaml")
+		content := fmt.Sprintf(`
+nodeID: %s
+raftAddr: 127.0.0.1:%d
+httpAddr: 127.0.0.1:%d
+dataDir: %s
+peers:
+  - {id: node1, addr: 127.0.0.1:9001}
+  - {id: node2, addr: 127.0.0.1:9002}
+  - {id: node3, addr: 127.0.0.1:9003}
+snapshot:
+  type: file
+  path: %s/snaps
+  retain: 3
+`, id, 9001+i, 10001+i, dir, dir)
+		os.WriteFile(path, []byte(content), 0644)
+		cfgs[i] = path
+	}
+
+	// 首次部署：在 node1 引导一次。
+	if err := exec.Command(bin, "init", "-config", cfgs[0]).Run(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	procs := make([]*proc, 3)
+	for i, cfg := range cfgs {
+		c := exec.Command(bin, "start", "-config", cfg)
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		if err := c.Start(); err != nil {
+			t.Fatalf("start node%d: %v", i+1, err)
+		}
+		procs[i] = &proc{cmd: c, id: fmt.Sprintf("node%d", i+1)}
+	}
+	cleanup := func() {
+		for _, p := range procs {
+			if p.cmd != nil && p.cmd.Process != nil {
+				p.cmd.Process.Signal(syscall.SIGTERM)
+				p.cmd.Wait()
+			}
+		}
+		os.RemoveAll(dataRoot)
+	}
+	return procs, cleanup
+}
+
+// httpBase returns the HTTP base URL for node index i (0-based).
+func httpBase(i int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d", 10001+i)
+}
+
+// waitForHTTP polls until the node responds on /cluster/status or times out.
+func waitForHTTP(t *testing.T, i int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := httpGet(httpBase(i) + "/cluster/status")
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			return
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("node %d did not come up", i+1)
+}
+
+// httpGet is a thin wrapper around http.Get.
+func httpGet(url string) (*http.Response, error) { return http.Get(url) }
+```
+
+- [ ] **Step 2: 写 e2e 测试**
+
+Create `e2e/cluster_e2e_test.go`:
+```go
+//go:build e2e
+
+package e2e
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"os"
+	"os/exec"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// TestE2EWriteReadAndFailover 覆盖 spec §6.4：真实 3 进程，写 leader、读、
+// kill leader 后客户端重试落新主，数据仍在。
+func TestE2EWriteReadAndFailover(t *testing.T) {
+	bin := os.Getenv("RAFT_META_BIN")
+	if bin == "" {
+		// 默认用 go run 拉起的临时构建产物。
+		out, err := exec.Command("go", "build", "-o", t.TempDir()+"/raft-meta", "./cmd/raft-meta").CombinedOutput()
+		if err != nil {
+			t.Fatalf("build: %v\n%s", err, out)
+		}
+		bin = t.TempDir() + "/raft-meta"
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skipf("binary not built: %v", err)
+	}
+
+	dataRoot := t.TempDir()
+	procs, cleanup := startCluster(t, bin, dataRoot)
+	defer cleanup()
+	for i := 0; i < 3; i++ {
+		waitForHTTP(t, i)
+	}
+
+	// 找到 leader。
+	leaderIdx := -1
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		for i := 0; i < 3; i++ {
+			resp, _ := http.Get(httpBase(i) + "/cluster/status")
+			if resp != nil && resp.StatusCode == 200 {
+				var s map[string]interface{}
+				json.NewDecoder(resp.Body).Decode(&s)
+				resp.Body.Close()
+				if s["state"] == "Leader" {
+					leaderIdx = i
+					break
+				}
+			}
+		}
+		if leaderIdx >= 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if leaderIdx < 0 {
+		t.Fatal("no leader elected")
+	}
+
+	// 写 leader。
+	body, _ := json.Marshal(map[string]string{"value": "e2e"})
+	req, err := http.NewRequest(http.MethodPut, httpBase(leaderIdx)+"/kv/e2ekey", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	if r.StatusCode != 200 {
+		t.Fatalf("PUT status = %d", r.StatusCode)
+	}
+	r.Body.Close()
+
+	// 等复制，从 follower 读（本地读，可能脏读，但等一会应一致）。
+	time.Sleep(time.Second)
+	follower := (leaderIdx + 1) % 3
+	got, err := http.Get(httpBase(follower) + "/kv/e2ekey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]string
+	json.NewDecoder(got.Body).Decode(&v)
+	got.Body.Close()
+	if v["value"] != "e2e" {
+		t.Fatalf("follower read = %q, want e2e", v["value"])
+	}
+
+	// kill leader，验证选新主且数据仍在。
+	procs[leaderIdx].cmd.Process.Signal(syscall.SIGTERM)
+	procs[leaderIdx].cmd.Wait()
+	procs[leaderIdx].cmd = nil
+
+	newLeader := -1
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		for i := 0; i < 3; i++ {
+			if i == leaderIdx {
+				continue
+			}
+			resp, _ := http.Get(httpBase(i) + "/cluster/status")
+			if resp != nil && resp.StatusCode == 200 {
+				var s map[string]interface{}
+				json.NewDecoder(resp.Body).Decode(&s)
+				resp.Body.Close()
+				if s["state"] == "Leader" {
+					newLeader = i
+					break
+				}
+			}
+		}
+		if newLeader >= 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if newLeader < 0 {
+		t.Fatal("no new leader after failover")
+	}
+
+	got, err = http.Get(httpBase(newLeader) + "/kv/e2ekey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v2 map[string]string
+	json.NewDecoder(got.Body).Decode(&v2)
+	got.Body.Close()
+	if v2["value"] != "e2e" {
+		t.Fatalf("after failover read = %q, want e2e", v2["value"])
+	}
+}
+```
+
+The build tag `//go:build e2e` keeps this test out of the default `go test ./...` run; run explicitly with `-tags e2e`.
+
+- [ ] **Step 3: 跑 e2e（手动）**
+
+Run:
+```bash
+go build -o /tmp/raft-meta ./cmd/raft-meta
+RAFT_META_BIN=/tmp/raft-meta go test -tags e2e ./e2e/ -v -timeout 120s
+```
+Expected: PASS（写→读→kill leader→新主读，数据都在）
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add e2e/
+git commit -m "test(e2e): real 3-process cluster write/read/failover
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+---
+
 ## Self-Review 结果
 
 **Spec coverage:**
 - §1 选型/主从语义 → 全局约束 + Task 5/6/7
 - §2 拓扑 + 联合引导 + 成员 API → Task 5 (BootstrapCluster) + Task 7 (/cluster/join,remove) + Task 8 (run-cluster.sh, init)
 - §3 模块划分 + snapshot 可插拔 → Task 1-7 文件结构与 spec 一致；snapshot 可插拔 Task 4
-- §4 数据流 写/读/快照/恢复 → Task 6 (写读路径) + Task 3 (Snapshot/Restore) + Task 5 (Apply)
-- §5 错误处理：5.1 重定向 (Task 7), 5.3 重启恢复 (Task 5/10), 5.6 成员变更 (Task 7/9), 5.9 单节点损坏 (Task 9 reset + Task 11), 5.10 强制恢复 (Task 9 recover + Task 11)
-- §6 测试策略 → Task 1-9 单测 + Task 10 集成 + Task 11 容灾 + Task 12 全量
+- §4 数据流 写/读/快照/恢复 → Task 6 (写读路径) + Task 3 (Snapshot/Restore) + Task 5 (Apply + BoltDB 持久化往返)
+- §5 错误处理：5.1 重定向 (Task 7), 5.3 重启恢复 (Task 5 持久化测试 + Task 10), 5.6 成员变更 (Task 7/9), 5.9 单节点损坏 (Task 9 reset + Task 11), 5.10 强制恢复 (Task 9 recover + Task 11)
+- §6 测试策略 → Task 1-9 单测 + Task 5 BoltDB 持久化往返 + Task 10 集成 + Task 11 容灾 + Task 13 HTTP e2e + Task 12 全量
 
 **已知简化（计划内，非占位符）：**
-- inmem transport 无持久化，故容灾测试验证"拓扑/选举"语义，持久化零丢失由真实 BoltDB 的 raftnode 单测环境保证（Task 5 用 BoltDB 路径需真实数据目录；若 CI 无磁盘限制可补一个 BoltDB 持久化往返测试，但 spec 未要求硬性指标，留作后续）
-- API 层 307 重定向的 raft:port→http:port 映射在生产部署需 server 层注入；当前用 raft 地址兜底，spec §4.1 接受重定向语义
+- Task 10/11 的多节点集成/容灾测试用 inmem transport（无跨进程网络），仅验证拓扑/选举/复制语义；持久化"零丢失"由 Task 5 的 BoltDB 持久化往返测试单独保证
+- API 层 307 重定向的 raft:port→http:port 映射在生产部署需 server 层注入；当前用 raft 地址兜底，spec §4.1 接受重定向语义。真实 HTTP 跨进程重定向由 Task 13 e2e 覆盖写→读→failover，但不专门断言 307 响应体
 
 **Placeholder scan:** 无 TBD/TODO；每步含完整代码或确切命令。
-**Type consistency:** `raftnode.Node` 方法签名（Apply/IsLeader/LeaderAddr/State/Stats/AddVoter/RemoveServer/Shutdown/Raft）在 Task 5 定义，Task 6/7/8/10/11 消费一致；`store.Store` 方法在 Task 6 定义，Task 7 消费一致；`fsm.Command/EncodeCommand/DecodeCommand` Task 2 定义，Task 3/5/6 消费一致。
+**Type consistency:** `raftnode.Node` 方法签名（Apply/IsLeader/LeaderAddr/State/Stats/AddVoter/RemoveServer/Shutdown/Raft）在 Task 5 定义，Task 6/7/8/10/11 消费一致；`store.Store` 方法在 Task 6 定义，Task 7 消费一致；`fsm.Command/EncodeCommand/DecodeCommand` Task 2 定义，Task 3/5/6 消费一致；Task 5 的 `New` 解耦 transport/persistence 后，DataDir!="" 走 BoltDB、UseInmemTransport 走 inmem transport，二者正交，Task 5 持久化测试与 Task 10/11 的 inmem 用法均兼容。
