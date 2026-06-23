@@ -69,7 +69,7 @@ Raft 在 3 节点中选举出 1 个 leader（主）+ 2 个 follower（从）：
 │  FSM 状态机    (内存 map + BoltDB 快照)      │
 │      ↓ Snap/Restore                         │
 ├─────────────────────────────────────────────┤
-│  持久化层      BoltDB(log/stable) + 快照存储 │
+│  持久化层      可插拔 log/stable(inmem/boltdb) + 可插拔快照存储 │
 └─────────────────────────────────────────────┘
 ```
 
@@ -175,7 +175,22 @@ func NewStore(cfg Config) (raft.SnapshotStore, error) {
 }
 ```
 
-**收益**：`fsm` 只和字节流打交道，加新后端 `fsm` 不改；加新序列化格式后端不改；`raftnode` 只依赖 `raft.SnapshotStore` 接口，测试可注入 `InmemSnapshotStore`。log store / stable store 将来可用同模式做可插拔（本次默认 BoltDB，预留）。
+**收益**：`fsm` 只和字节流打交道，加新后端 `fsm` 不改；加新序列化格式后端不改；`raftnode` 只依赖 `raft.SnapshotStore` 接口，测试可注入 `InmemSnapshotStore`。
+
+### 3.4 log/stable store 存储可插拔
+
+与 snapshot 同模式，raft 的 log store 与 stable store 也做成可插拔工厂（`internal/raftstore`），由 `cfg.logStore.type` 控制：
+
+- `inmem`：内存（测试用）
+- `boltdb`：`raft-boltdb`，一个 `BoltStore` 同时作 log 与 stable store（用不同 bucket），落盘 `dataDir/raft.db`
+- `rocksdb`：**留扩展点**，工厂返回 not-implemented；实现方式见 `internal/raftstore/rocksdb.go`（加 CGO 绑定 + 实现 `raft.LogStore`/`raft.StableStore` 接口）
+
+```yaml
+logStore:
+  type: boltdb   # inmem | boltdb | rocksdb(预留)；空 → 按 dataDir 自动选（有 dataDir=boltdb，无=inmem）
+```
+
+工厂 `NewStores(cfg, dataDir, logger) (raft.LogStore, raft.StableStore, io.Closer, error)` 一次返回 log 与 stable 两个 store（通常同一后端，如 BoltDB 的一个 handle 同时实现两个接口）外加一个 `io.Closer`（inmem 为 nil，boltdb 为 store 本身，Shutdown 时关闭释放文件锁）。空 `type` 按 `dataDir` 自动选择，保持不带 `logStore` 字段的旧配置行为不变。后端与 FSM 序列化、与 snapshot 后端均正交，各自独立演进。`raftnode` 只依赖 `raft.LogStore`/`raft.StableStore` 接口，不感知具体后端。
 
 ---
 

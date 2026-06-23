@@ -18,14 +18,20 @@ type SnapshotConfig struct {
 	Retain int    `yaml:"retain"` // 保留份数
 }
 
+// LogStoreConfig selects the raft log/stable store backend.
+type LogStoreConfig struct {
+	Type string `yaml:"type"` // inmem | boltdb | rocksdb (future); 空 → 按 dataDir 自动选
+}
+
 type Config struct {
-	NodeID            string         `yaml:"nodeID"`
-	RaftAddr          string         `yaml:"raftAddr"`
-	HTTPAddr          string         `yaml:"httpAddr"`
-	DataDir           string         `yaml:"dataDir"`
-	Peers             []Peer         `yaml:"peers"`
-	Snapshot          SnapshotConfig `yaml:"snapshot"`
-	UseInmemTransport bool           `yaml:"-"`
+	NodeID            string          `yaml:"nodeID"`
+	RaftAddr          string          `yaml:"raftAddr"`
+	HTTPAddr          string          `yaml:"httpAddr"`
+	DataDir           string          `yaml:"dataDir"`
+	Peers             []Peer          `yaml:"peers"`
+	Snapshot          SnapshotConfig  `yaml:"snapshot"`
+	LogStore          LogStoreConfig  `yaml:"logStore"`
+	UseInmemTransport bool            `yaml:"-"`
 }
 
 func Load(path string) (*Config, error) {

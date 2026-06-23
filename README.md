@@ -12,6 +12,15 @@
 
 首次运行会在 node1 上引导一次（仅当 data/node1 不存在），然后并行启动 3 节点。
 
+## 配置
+
+`configs/nodeN.yaml` 关键字段：
+
+- `raftAddr`/`httpAddr`/`dataDir`：raft/HTTP 监听地址与数据目录
+- `peers`：3 节点 voter 列表（联合引导用）
+- `snapshot.type`：快照存储后端（`file` | `inmem`；`file` 落 `snapshot.path`）
+- `logStore.type`：raft log/stable store 后端（`inmem` | `boltdb` | `rocksdb`(预留)）；留空则按 `dataDir` 自动选（有 `dataDir`=`boltdb`，无=`inmem`）
+
 ## 操作
 
     # 写（任意节点，非 leader 自动 307 重定向）

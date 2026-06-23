@@ -4,34 +4,33 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
-	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 	"raft-meta/internal/config"
 	"raft-meta/internal/fsm"
+	"raft-meta/internal/raftstore"
 	"raft-meta/internal/snapshot"
 )
 
 type Node struct {
-	cfg      *config.Config
-	raft     *raft.Raft
-	fsm      *fsm.FSM
-	trans    raft.Transport
-	logs     raft.LogStore
-	stable   raft.StableStore
-	bolt     io.Closer // non-nil when persistence is BoltDB; closed on Shutdown
-	snaps    raft.SnapshotStore
-	logger   hclog.Logger
+	cfg         *config.Config
+	raft        *raft.Raft
+	fsm         *fsm.FSM
+	trans       raft.Transport
+	logs        raft.LogStore
+	stable      raft.StableStore
+	storeCloser io.Closer // non-nil when the log/stable backend holds resources (e.g. BoltDB); closed on Shutdown
+	snaps       raft.SnapshotStore
+	logger      hclog.Logger
 }
 
 // New constructs a Node. Transport and persistence are decoupled:
 //   - transport: inmem when cfg.UseInmemTransport, else TCP
-//   - persistence: BoltDB (log+stable) + cfg.Snapshot store when cfg.DataDir != "",
-//     else inmem log/stable + cfg.Snapshot store
+//   - persistence (log+stable store): pluggable via cfg.LogStore.Type
+//     (inmem | boltdb | rocksdb-future); empty Type auto-selects by DataDir
+//     (boltdb when set, inmem otherwise). Snapshot store via cfg.Snapshot.
 //
 // This lets tests use inmem transport with real BoltDB persistence to verify
 // snapshot/log durability across restarts.
@@ -68,22 +67,14 @@ func New(cfg *config.Config, f *fsm.FSM, logger hclog.Logger) (*Node, error) {
 		n.trans = trans
 	}
 
-	// --- persistence ---
-	if cfg.DataDir != "" {
-		if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-			return nil, fmt.Errorf("mkdir dataDir: %w", err)
-		}
-		boltStore, err := raftboltdb.NewBoltStore(filepath.Join(cfg.DataDir, "raft.db"))
-		if err != nil {
-			return nil, fmt.Errorf("bolt store: %w", err)
-		}
-		n.stable = boltStore
-		n.logs = boltStore
-		n.bolt = boltStore // release file lock on Shutdown
-	} else {
-		n.logs = raft.NewInmemStore()
-		n.stable = raft.NewInmemStore()
+	// --- persistence (log + stable store), pluggable via cfg.LogStore.Type ---
+	logs, stable, storeCloser, err := raftstore.NewStores(cfg.LogStore, cfg.DataDir, logger)
+	if err != nil {
+		return nil, err
 	}
+	n.logs = logs
+	n.stable = stable
+	n.storeCloser = storeCloser // non-nil for backends holding resources (e.g. BoltDB); closed on Shutdown
 	snaps, err := snapshot.NewStore(cfg.Snapshot, logger)
 	if err != nil {
 		return nil, err
@@ -172,14 +163,14 @@ func (n *Node) Shutdown() error {
 	}
 	fut := n.raft.Shutdown()
 	err := fut.Error()
-	// Release the BoltDB file lock (and any transport resources) so a restart
-	// can reopen the same data directory. raft.Raft.Shutdown does not close
-	// the backing stores or transport.
-	if n.bolt != nil {
-		if cErr := n.bolt.Close(); cErr != nil && err == nil {
+	// Release the log/stable store's resources (e.g. the BoltDB file lock) and
+	// any transport resources so a restart can reopen the same data directory.
+	// raft.Raft.Shutdown does not close the backing stores or transport.
+	if n.storeCloser != nil {
+		if cErr := n.storeCloser.Close(); cErr != nil && err == nil {
 			err = cErr
 		}
-		n.bolt = nil
+		n.storeCloser = nil
 	}
 	if closer, ok := n.trans.(interface{ Close() error }); ok {
 		if cErr := closer.Close(); cErr != nil && err == nil {
