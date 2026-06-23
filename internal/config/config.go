@@ -19,12 +19,13 @@ type SnapshotConfig struct {
 }
 
 type Config struct {
-	NodeID   string          `yaml:"nodeID"`
-	RaftAddr string          `yaml:"raftAddr"`
-	HTTPAddr string          `yaml:"httpAddr"`
-	DataDir  string          `yaml:"dataDir"`
-	Peers    []Peer          `yaml:"peers"`
-	Snapshot SnapshotConfig `yaml:"snapshot"`
+	NodeID            string         `yaml:"nodeID"`
+	RaftAddr          string         `yaml:"raftAddr"`
+	HTTPAddr          string         `yaml:"httpAddr"`
+	DataDir           string         `yaml:"dataDir"`
+	Peers             []Peer         `yaml:"peers"`
+	Snapshot          SnapshotConfig `yaml:"snapshot"`
+	UseInmemTransport bool           `yaml:"-"`
 }
 
 func Load(path string) (*Config, error) {
