@@ -1,0 +1,12 @@
+nodeID: node2
+raftAddr: 127.0.0.1:7002
+httpAddr: 127.0.0.1:8002
+dataDir: ./data/node2
+peers:
+  - {id: node1, addr: 127.0.0.1:7001}
+  - {id: node2, addr: 127.0.0.1:7002}
+  - {id: node3, addr: 127.0.0.1:7003}
+snapshot:
+  type: file
+  path: ./data/node2/snapshots
+  retain: 3
