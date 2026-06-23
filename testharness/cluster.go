@@ -77,7 +77,11 @@ func NewCluster(t *testing.T, n int) *Cluster {
 // transport. Without this, a multi-node inmem cluster can never reach quorum.
 func (c *Cluster) connectTransports() {
 	for i, a := range c.order {
-		ta, ok := c.nodes[a].Raft.Transport().(*raft.InmemTransport)
+		na, ok := c.nodes[a]
+		if !ok || na == nil {
+			continue
+		}
+		ta, ok := na.Raft.Transport().(*raft.InmemTransport)
 		if !ok {
 			continue
 		}
@@ -85,11 +89,15 @@ func (c *Cluster) connectTransports() {
 			if i == j {
 				continue
 			}
-			tb, ok := c.nodes[b].Raft.Transport().(*raft.InmemTransport)
+			nb, ok := c.nodes[b]
+			if !ok || nb == nil {
+				continue
+			}
+			tb, ok := nb.Raft.Transport().(*raft.InmemTransport)
 			if !ok {
 				continue
 			}
-			ta.Connect(raft.ServerAddress(c.nodes[b].cfg.RaftAddr), tb)
+			ta.Connect(raft.ServerAddress(nb.cfg.RaftAddr), tb)
 		}
 	}
 }
@@ -163,4 +171,9 @@ func (c *Cluster) ShutdownAll() {
 	for _, n := range c.nodes {
 		_ = n.Raft.Shutdown()
 	}
+}
+
+// resetForTest wipes a node's data dir (no-op for inmem) for DR tests.
+func resetForTest(n *Node) error {
+	return raftnodeReset(n.cfg.DataDir)
 }
