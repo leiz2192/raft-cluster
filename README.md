@@ -26,7 +26,7 @@
 
 - `raftAddr`/`httpAddr`/`dataDir`：raft/HTTP 监听地址与数据目录
 - `peers`：3 节点 voter 列表（联合引导用，各节点回环地址 + 同一 raft 端口）
-- `snapshot.type`：快照存储后端（`file` | `inmem`；`file` 落 `snapshot.path`）
+- `snapshot.type`：快照存储后端（`file` | `inmem`）。`file` 时快照落 `<snapshot.path>/snapshots/`（raft 总会再建一层 `snapshots/` 子目录）；`snapshot.path` 空 → 用 `dataDir`，即 `<dataDir>/snapshots/`
 - `logStore.type`：raft log/stable store 后端（`inmem` | `boltdb` | `rocksdb`(预留)）；留空则按 `dataDir` 自动选（有 `dataDir`=`boltdb`，无=`inmem`）
 - `log`：业务日志。`file` 空 → 写 stderr（旧行为）；设了 `file` → 落文件并按 lumberjack 轮转（`maxSize` MB / `maxBackups` 份 / `maxAge` 天，gzip 压缩旧份）。`json: true` → JSON 格式（便于 ELK/Loki 解析），默认 `false`=text。`level` 空=info。raft 自身日志（选举/复制/快照）走同一 logger、同文件。
 - `debug.addr`：pprof 调试端口（同端口、各节点回环地址）；空 → 不开

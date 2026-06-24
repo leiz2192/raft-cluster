@@ -158,8 +158,9 @@ snapshot/
 配置：
 ```yaml
 snapshot:
-  type: file          # file | boltdb | s3
-  path: ./data/node1/snapshots
+  type: file          # file | inmem | s3(预留)
+  # path: /mnt/ssd/node1  # 可选；空则用 dataDir。raft 总在 base 下建 snapshots/ 子目录，
+                          # 故快照最终落 <path>/snapshots/（path 空 → <dataDir>/snapshots/）
   # s3:                  # type=s3 时
   #   bucket: ...
   #   prefix: ...

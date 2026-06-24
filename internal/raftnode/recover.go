@@ -44,7 +44,7 @@ func RecoverClusterSingle(cfg *config.Config, logger hclog.Logger) error {
 	}
 	defer boltStore.Close()
 
-	snaps, err := snapshot.NewStore(cfg.Snapshot, logger)
+	snaps, err := snapshot.NewStore(cfg.Snapshot, cfg.DataDir, logger)
 	if err != nil {
 		return err
 	}

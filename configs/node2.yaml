@@ -8,7 +8,6 @@ peers:
   - {id: node3, addr: 127.0.0.3:7000, httpAddr: 127.0.0.3:8000}
 snapshot:
   type: file
-  path: ./data/node2/snapshots
   retain: 3
 log:
   file: ./data/node2/raft-meta.log

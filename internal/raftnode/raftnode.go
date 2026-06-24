@@ -75,7 +75,7 @@ func New(cfg *config.Config, f *fsm.FSM, logger hclog.Logger) (*Node, error) {
 	n.logs = logs
 	n.stable = stable
 	n.storeCloser = storeCloser // non-nil for backends holding resources (e.g. BoltDB); closed on Shutdown
-	snaps, err := snapshot.NewStore(cfg.Snapshot, logger)
+	snaps, err := snapshot.NewStore(cfg.Snapshot, cfg.DataDir, logger)
 	if err != nil {
 		return nil, err
 	}
