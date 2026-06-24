@@ -216,7 +216,7 @@ logStore:
 
 - `log.file` 空 → 写 stderr（保持旧行为）
 - `log.file` 设 → 落文件，经 `lumberjack` 轮转（`maxSize` MB / `maxBackups` 份 / `maxAge` 天，旧份 gzip 压缩）；父目录自动创建
-- `log.json: true` → JSON 格式（`@level`/`@message`/`@module`/`@timestamp` + 结构化字段，便于 ELK/Loki 解析）
+- `log.json: true` → JSON 格式（`@level`/`@message`/`@module`/`@timestamp` + 结构化字段，便于 ELK/Loki 解析）；默认 `false`=text（`时间 [LEVEL]  module: msg key=val`）
 - `log.level` → trace/debug/info/warn/error；空或非法回退 info
 
 `server.Run`/`server.Init` 用 `logging.NewLogger(cfg.Log, ...)` 替代内联 `hclog.New`，其余不变。

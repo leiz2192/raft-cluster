@@ -13,7 +13,7 @@ snapshot:
 log:
   file: ./data/node1/raft-meta.log
   level: info
-  json: true
+  json: false
   maxSize: 100
   maxBackups: 7
   maxAge: 30
