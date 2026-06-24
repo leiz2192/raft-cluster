@@ -17,3 +17,6 @@ log:
   maxSize: 100
   maxBackups: 7
   maxAge: 30
+
+debug:
+  addr: 127.0.0.1:6062

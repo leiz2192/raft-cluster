@@ -217,9 +217,9 @@ logStore:
 
 `server.Run`/`server.Init` 用 `logging.NewLogger(cfg.Log, ...)` 替代内联 `hclog.New`，其余不变。
 
-### 3.7 pprof 调试端点
+### 3.7 pprof 调试端点（独立端口，与业务隔离）
 
-`api.Handler()` 在 mux 上挂 `net/http/pprof` 标准端点（`/debug/pprof/` 及 `cmdline`/`profile`/`symbol`/`trace`），同 HTTP 端口暴露，符合 Go 惯例。`pprof.Index` 兼作 `/debug/pprof/<profile>` 子路径（heap/goroutine/allocs/block/mutex）的入口。生产环境如需隔离在防火墙层限制 `/debug/pprof/`。
+pprof 挂在**独立调试端口**，与业务 API 端口隔离——`internal/debug.NewHTTPServer(addr)` 返回一个只服务 `net/http/pprof` 端点（`/debug/pprof/` 及 `cmdline`/`profile`/`symbol`/`trace`，`pprof.Index` 兼作 heap/goroutine/allocs 等子路径入口）的 `*http.Server`。`server.Run` 当 `cfg.Debug.Addr` 非空时起这第二个 server，与业务 HTTP server 同生命周期（信号一并优雅关闭）；空则不开 pprof。业务 mux（`api.Handler()`）不再挂任何 `/debug/pprof/` 路由，故业务端口对 pprof 返回 404。这样 pprof 的采集负载（30s CPU profile 等）不混入 `/kv`/`/cluster`/`/metrics` 流量，也便于在防火墙层单独放行/限制调试端口。
 
 ---
 

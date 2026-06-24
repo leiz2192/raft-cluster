@@ -33,6 +33,11 @@ type LogConfig struct {
 	MaxAge     int    `yaml:"maxAge"`     // 保留天数；空=30
 }
 
+// DebugConfig configures the isolated pprof debug server. Addr empty → pprof off.
+type DebugConfig struct {
+	Addr string `yaml:"addr"` // 调试端口监听地址，如 127.0.0.1:6061；空=不开
+}
+
 type Config struct {
 	NodeID            string          `yaml:"nodeID"`
 	RaftAddr          string          `yaml:"raftAddr"`
@@ -42,6 +47,7 @@ type Config struct {
 	Snapshot          SnapshotConfig  `yaml:"snapshot"`
 	LogStore          LogStoreConfig  `yaml:"logStore"`
 	Log               LogConfig       `yaml:"log"`
+	Debug             DebugConfig     `yaml:"debug"`
 	UseInmemTransport bool            `yaml:"-"`
 }
 

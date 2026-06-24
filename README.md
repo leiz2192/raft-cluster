@@ -49,15 +49,15 @@
 
     curl http://127.0.0.1:8001/metrics
 
-## 调试（pprof）
+## 调试（pprof，独立端口）
 
-`/debug/pprof/` 暴露 Go pprof 端点（同 HTTP 端口）。采 CPU/堆/goroutine 等：
+pprof 挂在**独立调试端口**（`debug.addr`，默认 6061/6062/6063），与业务端口（8001-3）隔离。`debug.addr` 空 → 不开 pprof。
 
-    go tool pprof http://127.0.0.1:8001/debug/pprof/profile?seconds=30   # CPU
-    go tool pprof http://127.0.0.1:8001/debug/pprof/heap                  # 堆
-    curl http://127.0.0.1:8001/debug/pprof/goroutine?debug=2              # goroutine 栈
+    go tool pprof http://127.0.0.1:6061/debug/pprof/profile?seconds=30   # CPU
+    go tool pprof http://127.0.0.1:6061/debug/pprof/heap                  # 堆
+    curl http://127.0.0.1:6061/debug/pprof/goroutine?debug=2              # goroutine 栈
 
-生产环境如需隔离，在防火墙层限制 `/debug/pprof/`。
+业务端口（8001-3）不响应 `/debug/pprof/`。
 
 ## 容灾
 

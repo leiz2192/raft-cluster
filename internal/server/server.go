@@ -10,6 +10,7 @@ import (
 
 	"raft-meta/internal/api"
 	"raft-meta/internal/config"
+	"raft-meta/internal/debug"
 	"raft-meta/internal/fsm"
 	"raft-meta/internal/logging"
 	"raft-meta/internal/metrics"
@@ -37,16 +38,30 @@ func Run(cfg *config.Config) error {
 		Handler: a.Handler(),
 	}
 
+	// pprof 隔离到独立调试端口（业务端口不挂）。cfg.Debug.Addr 空 → 不开。
+	var debugSrv *http.Server
+	if cfg.Debug.Addr != "" {
+		debugSrv = debug.NewHTTPServer(cfg.Debug.Addr)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("http listening", "addr", cfg.HTTPAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
+	if debugSrv != nil {
+		go func() {
+			logger.Info("debug (pprof) listening", "addr", cfg.Debug.Addr)
+			if err := debugSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
+		}()
+	}
 
 	select {
 	case err := <-errCh:
@@ -56,6 +71,9 @@ func Run(cfg *config.Config) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		httpSrv.Shutdown(shutdownCtx)
+		if debugSrv != nil {
+			debugSrv.Shutdown(shutdownCtx)
+		}
 		return nil
 	}
 }
