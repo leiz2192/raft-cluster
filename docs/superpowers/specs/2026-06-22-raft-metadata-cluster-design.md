@@ -206,6 +206,8 @@ logStore:
 
 **JSON `/cluster/status`**（人看）：在原有 `state`/`leader`/`stats` 基础上扩展 `is_leader`、`fsm_keys`、`peers`、`term`、`commit_index`、`applied_index`、`last_snapshot_index`。
 
+**全量状态 `/cluster/status?full=true`**：经当前节点扇出，HTTP 请求每个 peer 的 `/cluster/status`（本地、非 full，不递归），聚合为 `{"nodes": {nodeID: {状态..., reachable: bool, error?: string}}}`。任一节点即可查到全集群状态；不可达 peer 标记 `reachable:false` + error，不阻断其余节点返回（2s 超时）。peer 的 HTTP 地址由 `cfg.Peers[].httpAddr` 提供（同时用于写请求的 307 重定向 Location——leader raft 地址经 `HTTPAddrForRaft` 映射到其 http 地址，不再用 raft 地址兜底）。
+
 状态类指标用"抓取时读"的自定义 collector（无递增事件可挂），操作类指标在调用点递增。`metrics.Metrics` 对 `store`/`api` 是可选注入（nil-safe），`server.Run` 装配时创建并注入。
 
 ### 3.6 业务日志

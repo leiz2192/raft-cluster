@@ -152,6 +152,34 @@ func (n *Node) Snapshot() error {
 
 func (n *Node) Raft() *raft.Raft { return n.raft }
 
+// ID returns this node's configured ID.
+func (n *Node) ID() string { return n.cfg.NodeID }
+
+// PeerHTTPAddrs returns a map of peer ID -> HTTP address, from cfg.Peers.
+// Used by the API to fan out cluster-status queries to all nodes. Peers
+// without a configured httpAddr are omitted.
+func (n *Node) PeerHTTPAddrs() map[string]string {
+	out := make(map[string]string, len(n.cfg.Peers))
+	for _, p := range n.cfg.Peers {
+		if p.HTTPAddr != "" {
+			out[p.ID] = p.HTTPAddr
+		}
+	}
+	return out
+}
+
+// HTTPAddrForRaft returns the HTTP address of the peer whose raft address
+// matches raftAddr, or "" if unknown. Used to map a leader's raft address
+// (from raft.Leader()) to its HTTP address for 307 redirects.
+func (n *Node) HTTPAddrForRaft(raftAddr string) string {
+	for _, p := range n.cfg.Peers {
+		if p.Addr == raftAddr {
+			return p.HTTPAddr
+		}
+	}
+	return ""
+}
+
 // Transport returns the underlying raft.Transport. Test harnesses use this to
 // wire inmem transports together (InmemTransport peers are isolated until
 // Connect is called); production code rarely needs it.

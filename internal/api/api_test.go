@@ -329,3 +329,119 @@ func TestPprofNotOnBusinessPort(t *testing.T) {
 		t.Errorf("/debug/pprof/heap on business port = %d, want 404 (pprof isolated to debug port)", resp.StatusCode)
 	}
 }
+
+// TestClusterStatusFullFanout 验证 /cluster/status?full=true 扇出聚合所有节点：
+// 本节点 + 2 个 stub peer（返回 follower 状态），都可达。
+func TestClusterStatusFullFanout(t *testing.T) {
+	stubStatus := func(id string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"nodeID": id, "state": "Follower", "leader": "127.0.0.1:7701",
+			})
+		}
+	}
+	stub2 := httptest.NewServer(stubStatus("node2"))
+	defer stub2.Close()
+	stub3 := httptest.NewServer(stubStatus("node3"))
+	defer stub3.Close()
+
+	log := hclog.NewNullLogger()
+	f := fsm.New()
+	cfg := &config.Config{
+		NodeID: "node1", RaftAddr: "127.0.0.1:7701", HTTPAddr: "127.0.0.1:8701",
+		Peers: []config.Peer{
+			{ID: "node1", Addr: "127.0.0.1:7701", HTTPAddr: "127.0.0.1:8701"},
+			{ID: "node2", Addr: "127.0.0.1:7702", HTTPAddr: strings.TrimPrefix(stub2.URL, "http://")},
+			{ID: "node3", Addr: "127.0.0.1:7703", HTTPAddr: strings.TrimPrefix(stub3.URL, "http://")},
+		},
+		Snapshot:          config.SnapshotConfig{Type: "inmem"},
+		UseInmemTransport: true,
+	}
+	n, err := raftnode.New(cfg, f, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { n.Shutdown() })
+	m := metrics.New(n, f)
+	s := store.New(n, f, 2*time.Second)
+	s.SetMetrics(m)
+	a := New(s, n, m)
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/cluster/status?full=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got struct {
+		Nodes map[string]map[string]interface{} `json:"nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"node1", "node2", "node3"} {
+		node, ok := got.Nodes[id]
+		if !ok {
+			t.Errorf("nodes missing %q; got keys: %v", id, got.Nodes)
+			continue
+		}
+		if node["reachable"] != true {
+			t.Errorf("node %q reachable = %v, want true (err=%v)", id, node["reachable"], node["error"])
+		}
+	}
+	if got.Nodes["node2"]["state"] != "Follower" {
+		t.Errorf("node2 state = %v, want Follower", got.Nodes["node2"]["state"])
+	}
+}
+
+// TestClusterStatusFullUnreachable 验证不可达 peer 标记 reachable=false + error。
+func TestClusterStatusFullUnreachable(t *testing.T) {
+	log := hclog.NewNullLogger()
+	f := fsm.New()
+	cfg := &config.Config{
+		NodeID: "node1", RaftAddr: "127.0.0.1:7711", HTTPAddr: "127.0.0.1:8711",
+		Peers: []config.Peer{
+			{ID: "node1", Addr: "127.0.0.1:7711", HTTPAddr: "127.0.0.1:8711"},
+			{ID: "node2", Addr: "127.0.0.1:7712", HTTPAddr: "127.0.0.1:1"}, // 不可达端口
+			{ID: "node3", Addr: "127.0.0.1:7713", HTTPAddr: "127.0.0.1:2"},
+		},
+		Snapshot:          config.SnapshotConfig{Type: "inmem"},
+		UseInmemTransport: true,
+	}
+	n, err := raftnode.New(cfg, f, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { n.Shutdown() })
+	m := metrics.New(n, f)
+	s := store.New(n, f, 2*time.Second)
+	s.SetMetrics(m)
+	a := New(s, n, m)
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/cluster/status?full=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		Nodes map[string]map[string]interface{} `json:"nodes"`
+	}
+	json.NewDecoder(resp.Body).Decode(&got)
+	if got.Nodes["node1"]["reachable"] != true {
+		t.Errorf("self node1 reachable = %v, want true", got.Nodes["node1"]["reachable"])
+	}
+	for _, id := range []string{"node2", "node3"} {
+		if got.Nodes[id]["reachable"] == true {
+			t.Errorf("node %q should be unreachable (port 1/2), got reachable=true", id)
+		}
+		if got.Nodes[id]["error"] == nil || got.Nodes[id]["error"] == "" {
+			t.Errorf("node %q should have error", id)
+		}
+	}
+}

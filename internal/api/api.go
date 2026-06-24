@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"raft-meta/internal/metrics"
 	"raft-meta/internal/raftnode"
@@ -111,9 +113,20 @@ func (a *API) handleKVList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("full") == "true" {
+		a.handleFullStatus(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, a.localStatus())
+}
+
+// localStatus builds this node's status map (state/leader/stats + metrics
+// extension). Used both for the local /cluster/status response and as the
+// "self" entry in the full fan-out.
+func (a *API) localStatus() map[string]interface{} {
 	stats := a.node.Stats()
 	out := map[string]interface{}{
-		"nodeID": stats["node_id"],
+		"nodeID": a.node.ID(),
 		"state":  a.node.State().String(),
 		"leader": a.node.LeaderAddr(),
 		"stats":  stats,
@@ -123,8 +136,62 @@ func (a *API) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 			out[k] = v
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
+
+// handleFullStatus fans out: returns this node's status plus every peer's
+// status, fetched over HTTP from each peer's configured httpAddr. Peers are
+// queried with the local (non-full) endpoint, so no recursion. Unreachable
+// peers are marked reachable=false with the error.
+func (a *API) handleFullStatus(w http.ResponseWriter, r *http.Request) {
+	self := a.localStatus()
+	self["reachable"] = true
+	nodes := map[string]interface{}{a.node.ID(): self}
+
+	for id, httpAddr := range a.node.PeerHTTPAddrs() {
+		if id == a.node.ID() {
+			continue
+		}
+		if httpAddr == "" {
+			nodes[id] = map[string]interface{}{"reachable": false, "error": "peer http address not configured"}
+			continue
+		}
+		peer, err := fetchPeerStatus(httpAddr)
+		if err != nil {
+			nodes[id] = map[string]interface{}{"reachable": false, "error": err.Error()}
+			continue
+		}
+		peer["reachable"] = true
+		nodes[id] = peer
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": nodes})
+}
+
+// fetchPeerStatus GETs http://httpAddr/cluster/status (local, non-full) and
+// decodes the JSON status map. 2s timeout so one slow/dead peer doesn't stall
+// the whole fan-out.
+func fetchPeerStatus(httpAddr string) (map[string]interface{}, error) {
+	url := "http://" + httpAddr + "/cluster/status"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := peerHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("peer %s: status %d", httpAddr, resp.StatusCode)
+	}
+	var out map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("peer %s: decode: %w", httpAddr, err)
+	}
+	return out, nil
+}
+
+var peerHTTPClient = &http.Client{Timeout: 2 * time.Second}
 
 type memberBody struct {
 	ID   string `json:"id"`
@@ -207,14 +274,14 @@ func (a *API) redirectToLeader(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no leader (election in progress)", http.StatusServiceUnavailable)
 		return
 	}
-	// 307 redirect: simple and reliable; clients retry and land on the leader.
-	// Real deployments need a raft:port -> http:port mapping injected by the
-	// server layer; here we fall back to the raft address (accepted
-	// simplification — tests rely on the recognizable port suffix).
-	httpAddr := leader
-	// NOTE: the Location header MUST be set before WriteHeader is called,
-	// otherwise net/http logs "superfluous response.WriteHeader call" and the
-	// header is dropped. writeJSON below calls WriteHeader(307).
+	// Map the leader's raft address to its HTTP address via cfg.Peers; fall
+	// back to the raft address if unmapped (e.g. peers lack httpAddr).
+	httpAddr := a.node.HTTPAddrForRaft(leader)
+	if httpAddr == "" {
+		httpAddr = leader
+	}
+	// NOTE: Location header MUST be set before WriteHeader — writeJSON below
+	// calls WriteHeader(307).
 	w.Header().Set("Location", "http://"+httpAddr)
 	writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
 		"leader": httpAddr,

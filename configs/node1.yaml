@@ -3,9 +3,9 @@ raftAddr: 127.0.0.1:7000
 httpAddr: 127.0.0.1:8000
 dataDir: ./data/node1
 peers:
-  - {id: node1, addr: 127.0.0.1:7000}
-  - {id: node2, addr: 127.0.0.2:7000}
-  - {id: node3, addr: 127.0.0.3:7000}
+  - {id: node1, addr: 127.0.0.1:7000, httpAddr: 127.0.0.1:8000}
+  - {id: node2, addr: 127.0.0.2:7000, httpAddr: 127.0.0.2:8000}
+  - {id: node3, addr: 127.0.0.3:7000, httpAddr: 127.0.0.3:8000}
 snapshot:
   type: file
   path: ./data/node1/snapshots

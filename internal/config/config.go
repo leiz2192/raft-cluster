@@ -8,8 +8,9 @@ import (
 )
 
 type Peer struct {
-	ID   string `yaml:"id"`
-	Addr string `yaml:"addr"`
+	ID       string `yaml:"id"`
+	Addr     string `yaml:"addr"`     // raft 地址
+	HTTPAddr string `yaml:"httpAddr"` // HTTP 业务地址（集群状态扇出/重定向用）
 }
 
 type SnapshotConfig struct {
