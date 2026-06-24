@@ -217,6 +217,10 @@ logStore:
 
 `server.Run`/`server.Init` 用 `logging.NewLogger(cfg.Log, ...)` 替代内联 `hclog.New`，其余不变。
 
+### 3.7 pprof 调试端点
+
+`api.Handler()` 在 mux 上挂 `net/http/pprof` 标准端点（`/debug/pprof/` 及 `cmdline`/`profile`/`symbol`/`trace`），同 HTTP 端口暴露，符合 Go 惯例。`pprof.Index` 兼作 `/debug/pprof/<profile>` 子路径（heap/goroutine/allocs/block/mutex）的入口。生产环境如需隔离在防火墙层限制 `/debug/pprof/`。
+
 ---
 
 ## 4. 数据流

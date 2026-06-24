@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/pprof"
 	"strings"
 
 	"raft-meta/internal/metrics"
@@ -35,6 +36,14 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/cluster/join", a.handleJoin)
 	mux.HandleFunc("/cluster/remove", a.handleRemove)
 	mux.HandleFunc("/cluster/snapshot", a.handleSnapshot)
+	// pprof 调试端点（/debug/pprof/）。同端口暴露，符合 Go 惯例；生产环境
+	// 如需隔离可在防火墙层限制。pprof.Index 同时处理 /debug/pprof/<profile>
+	// 子路径（heap/goroutine/allocs/block/mutex 等）。
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	var h http.Handler = mux
 	if a.metrics != nil {
 		mux.Handle("/metrics", a.metrics.PrometheusHandler())

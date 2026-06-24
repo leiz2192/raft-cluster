@@ -49,6 +49,16 @@
 
     curl http://127.0.0.1:8001/metrics
 
+## 调试（pprof）
+
+`/debug/pprof/` 暴露 Go pprof 端点（同 HTTP 端口）。采 CPU/堆/goroutine 等：
+
+    go tool pprof http://127.0.0.1:8001/debug/pprof/profile?seconds=30   # CPU
+    go tool pprof http://127.0.0.1:8001/debug/pprof/heap                  # 堆
+    curl http://127.0.0.1:8001/debug/pprof/goroutine?debug=2              # goroutine 栈
+
+生产环境如需隔离，在防火墙层限制 `/debug/pprof/`。
+
 ## 容灾
 
 **单节点数据损坏**（另 2 个健康，零丢失）：

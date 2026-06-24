@@ -313,3 +313,34 @@ func TestSnapshotIncrementsCounter(t *testing.T) {
 		t.Fatalf("snapshot counter %v -> %v, want +1", before, after)
 	}
 }
+
+// TestPprofEndpoints 验证 /debug/pprof/ 挂载且可采集。
+func TestPprofEndpoints(t *testing.T) {
+	api, _ := newAPI(t)
+	srv := httptest.NewServer(api.Handler())
+	defer srv.Close()
+
+	// pprof 首页应 200，含已知 profile 链接。
+	resp, err := http.Get(srv.URL + "/debug/pprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/debug/pprof/ status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "goroutine") {
+		t.Errorf("/debug/pprof/ body missing 'goroutine' link: %s", body)
+	}
+
+	// heap profile 应可采集（返回 200，content-type 是 text 或 protobuf）。
+	resp, err = http.Get(srv.URL + "/debug/pprof/heap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/debug/pprof/heap status = %d, want 200", resp.StatusCode)
+	}
+}
