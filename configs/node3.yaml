@@ -1,11 +1,11 @@
 nodeID: node3
-raftAddr: 127.0.0.1:7003
-httpAddr: 127.0.0.1:8003
+raftAddr: 127.0.0.3:7000
+httpAddr: 127.0.0.3:8000
 dataDir: ./data/node3
 peers:
-  - {id: node1, addr: 127.0.0.1:7001}
-  - {id: node2, addr: 127.0.0.1:7002}
-  - {id: node3, addr: 127.0.0.1:7003}
+  - {id: node1, addr: 127.0.0.1:7000}
+  - {id: node2, addr: 127.0.0.2:7000}
+  - {id: node3, addr: 127.0.0.3:7000}
 snapshot:
   type: file
   path: ./data/node3/snapshots
@@ -19,4 +19,4 @@ log:
   maxAge: 30
 
 debug:
-  addr: 127.0.0.1:6063
+  addr: 127.0.0.3:6060
