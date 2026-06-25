@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -72,18 +73,33 @@ func parseSize(s string) (int64, error) {
 	return int64(n * float64(mult)), nil
 }
 
-// Duration 是时间段，YAML 可写 "5s"/"10m"/"1h"/"500ms"（time.ParseDuration）；
+// dayRe 匹配 "<数>d"/"<数>day"/"<数>days"（大小写不敏感），转成小时——
+// time.ParseDuration 只支持到 h，不支持天。
+var dayRe = regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*(?:days?|d)`)
+
+// parseDuration 扩展 time.ParseDuration：额外支持天（d/day/days = 24h），
+// 可与标准单位组合，如 "1d30m"、"7days"、"1.5d"。
+func parseDuration(s string) (time.Duration, error) {
+	s = dayRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := dayRe.FindStringSubmatch(m)
+		n, _ := strconv.ParseFloat(sub[1], 64)
+		return strconv.FormatFloat(n*24, 'f', -1, 64) + "h"
+	})
+	return time.ParseDuration(s)
+}
+
+// Duration 是时间段，YAML 可写 "5s"/"10m"/"1h"/"500ms"/"1d"/"7days"/"1d30m"；
 // 裸数字按秒。
 type Duration time.Duration
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	var str string
 	if err := value.Decode(&str); err == nil {
-		if dd, err := time.ParseDuration(str); err == nil {
+		if dd, err := parseDuration(str); err == nil {
 			*d = Duration(dd)
 			return nil
 		}
-		// yaml 把裸数字 30 解成 "30"；ParseDuration 不收，按秒处理。
+		// yaml 把裸数字 30 解成 "30"；按秒处理。
 		if n, err := strconv.ParseFloat(str, 64); err == nil {
 			*d = Duration(time.Duration(n * float64(time.Second)))
 			return nil

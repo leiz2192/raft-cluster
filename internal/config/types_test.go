@@ -54,6 +54,13 @@ func TestDurationUnmarshal(t *testing.T) {
 		"500ms": 500 * time.Millisecond,
 		"1m30s": 90 * time.Second,
 		"30":    30 * time.Second, // 裸数字 = 秒
+		"1d":    24 * time.Hour,
+		"1D":    24 * time.Hour, // 大小写不敏感
+		"1.5d":  36 * time.Hour,
+		"7days": 7 * 24 * time.Hour,
+		"7day":  7 * 24 * time.Hour,
+		"1d30m": 24*time.Hour + 30*time.Minute, // 组合
+		"2d3h":  2*24*time.Hour + 3*time.Hour,
 	}
 	for in, want := range cases {
 		var d Duration

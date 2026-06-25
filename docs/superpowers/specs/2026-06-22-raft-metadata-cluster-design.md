@@ -227,7 +227,7 @@ logStore:
 配置里的大小与时长用自定义 YAML 类型（`internal/config/types.go`），而非裸 int：
 
 - **`Size`**：`"100MB"`/`"1GB"`/`"512KiB"`/`104857600`。后缀二进制（`KB=KiB=1024`，`MB=MiB=1024²`…，与 lumberjack/Go 惯例一致），裸数字=字节。`Megabytes()` 供 lumberjack `MaxSize`（MB=1024²）。`log.maxSize` 用此类型（默认 100MB）。
-- **`Duration`**：`"5s"`/`"10m"`/`"1h"`/`"500ms"`（`time.ParseDuration`），裸数字=秒。
+- **`Duration`**：`"5s"`/`"10m"`/`"1h"`/`"500ms"`/`"1d"`/`"7days"`/`"1d30m"`（`time.ParseDuration` 扩展天 `d`/`day`/`days`=24h，可与标准单位组合），裸数字=秒。
 
 新增 `raft` 配置节（之前硬编码，现可配，空用默认）：
 - `raft.applyTimeout`（Duration，空=5s）→ `store` 写 `raft.Apply` 超时

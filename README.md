@@ -32,7 +32,7 @@
 - `log`：业务日志。`file` 空 → 写 stderr（旧行为）；设了 `file` → 落文件并按 lumberjack 轮转。`maxSize` 支持 Size 写法（`100MB`/`1GB`，二进制 KB=1024，空=100MB）；`maxBackups` 份数（空=7）；`maxAge` 天（空=30）；gzip 压缩旧份。`json: true` → JSON，默认 `false`=text。`level` 空=info。raft 自身日志走同一 logger、同文件。
 - `debug.addr`：pprof 调试端口（同端口、各节点回环地址）；空 → 不开
 
-> Size/Duration：`maxSize` 等大小字段支持 `100MB`/`1GB`/`512KiB`（二进制，裸数字=字节）；`applyTimeout`/`snapshotInterval` 等时长支持 `5s`/`10m`/`1h`（`time.ParseDuration`，裸数字=秒）。
+> Size/Duration：`maxSize` 等大小字段支持 `100MB`/`1GB`/`512KiB`（二进制，裸数字=字节）；`applyTimeout`/`snapshotInterval` 等时长支持 `5s`/`10m`/`1h`/`1d`/`7days`/`1d30m`（`time.ParseDuration` + 天，裸数字=秒）。
 
 ## 操作
 
