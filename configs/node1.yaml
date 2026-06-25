@@ -9,11 +9,15 @@ peers:
 snapshot:
   type: file
   retain: 3
+raft:
+  applyTimeout: 5s
+  snapshotInterval: 10m
+  snapshotThreshold: 1024
 log:
   file: ./data/node1/raft-meta.log
   level: info
   json: false
-  maxSize: 100
+  maxSize: 100MB
   maxBackups: 7
   maxAge: 30
 

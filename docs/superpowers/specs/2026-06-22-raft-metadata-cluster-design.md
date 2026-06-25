@@ -216,11 +216,25 @@ logStore:
 业务日志用 hclog（`raft.Config.Logger` 类型即 `hclog.Logger`，故 raft 自身的选举/复制/快照日志与应用日志走同一 logger、同格式、同输出）。新增 `internal/logging` 工厂 `NewLogger(cfg.Log, name)`：
 
 - `log.file` 空 → 写 stderr（保持旧行为）
-- `log.file` 设 → 落文件，经 `lumberjack` 轮转（`maxSize` MB / `maxBackups` 份 / `maxAge` 天，旧份 gzip 压缩）；父目录自动创建
+- `log.file` 设 → 落文件，经 `lumberjack` 轮转（`maxSize` Size / `maxBackups` 份 / `maxAge` 天，旧份 gzip 压缩）；父目录自动创建
 - `log.json: true` → JSON 格式（`@level`/`@message`/`@module`/`@timestamp` + 结构化字段，便于 ELK/Loki 解析）；默认 `false`=text（`时间 [LEVEL]  module: msg key=val`）
 - `log.level` → trace/debug/info/warn/error；空或非法回退 info
 
 `server.Run`/`server.Init` 用 `logging.NewLogger(cfg.Log, ...)` 替代内联 `hclog.New`，其余不变。
+
+### 3.8 类型化配置（Size / Duration / raft 时序）
+
+配置里的大小与时长用自定义 YAML 类型（`internal/config/types.go`），而非裸 int：
+
+- **`Size`**：`"100MB"`/`"1GB"`/`"512KiB"`/`104857600`。后缀二进制（`KB=KiB=1024`，`MB=MiB=1024²`…，与 lumberjack/Go 惯例一致），裸数字=字节。`Megabytes()` 供 lumberjack `MaxSize`（MB=1024²）。`log.maxSize` 用此类型（默认 100MB）。
+- **`Duration`**：`"5s"`/`"10m"`/`"1h"`/`"500ms"`（`time.ParseDuration`），裸数字=秒。
+
+新增 `raft` 配置节（之前硬编码，现可配，空用默认）：
+- `raft.applyTimeout`（Duration，空=5s）→ `store` 写 `raft.Apply` 超时
+- `raft.snapshotInterval`（Duration，空=10m）→ raft 快照检测间隔（注意：仅检测，日志增量达 `snapshotThreshold` 才真正快照，见 §4.3）
+- `raft.snapshotThreshold`（uint64，空=1024）→ 快照日志条数阈值
+
+`raftnode.New` 读 `cfg.Raft.SnapshotInterval/SnapshotThreshold`（替代硬编码 10m/1024）；`server.Run` 读 `cfg.Raft.ApplyTimeout`（替代硬编码 5s）传给 `store.New`。
 
 ### 3.7 pprof 调试端点（独立端口，与业务隔离）
 

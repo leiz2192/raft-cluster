@@ -32,9 +32,15 @@ func NewLogger(cfg config.LogConfig, name string) hclog.Logger {
 		if dir := filepath.Dir(cfg.File); dir != "" {
 			_ = os.MkdirAll(dir, 0755)
 		}
+		// lumberjack MaxSize 单位是 MB（二进制 1024²）。cfg.MaxSize 是 Size
+		//（可写 "100MB"）；空/<=0 默认 100MB。
+		maxSize := cfg.MaxSize
+		if maxSize <= 0 {
+			maxSize = config.Size(100 * (1 << 20))
+		}
 		opts.Output = &lumberjack.Logger{
 			Filename:   cfg.File,
-			MaxSize:    orDefault(cfg.MaxSize, 100), // MB
+			MaxSize:    maxSize.Megabytes(),
 			MaxBackups: orDefault(cfg.MaxBackups, 7),
 			MaxAge:     orDefault(cfg.MaxAge, 30), // 天
 			LocalTime:  true,

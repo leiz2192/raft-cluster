@@ -37,8 +37,15 @@ type Node struct {
 func New(cfg *config.Config, f *fsm.FSM, logger hclog.Logger) (*Node, error) {
 	raftCfg := raft.DefaultConfig()
 	raftCfg.LocalID = raft.ServerID(cfg.NodeID)
+	// 快照：定时检测间隔 + 日志条数阈值，均可配（cfg.Raft），空用默认。
 	raftCfg.SnapshotThreshold = 1024
+	if cfg.Raft.SnapshotThreshold > 0 {
+		raftCfg.SnapshotThreshold = cfg.Raft.SnapshotThreshold
+	}
 	raftCfg.SnapshotInterval = 10 * time.Minute
+	if d := cfg.Raft.SnapshotInterval.D(); d > 0 {
+		raftCfg.SnapshotInterval = d
+	}
 	raftCfg.Logger = logger
 
 	n := &Node{cfg: cfg, fsm: f, logger: logger}

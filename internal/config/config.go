@@ -29,9 +29,16 @@ type LogConfig struct {
 	File       string `yaml:"file"`       // 日志文件路径；空则写 stderr
 	Level      string `yaml:"level"`      // trace/debug/info/warn/error；空=info
 	JSON       bool   `yaml:"json"`       // JSON 格式
-	MaxSize    int    `yaml:"maxSize"`    // MB，轮转阈值；空=100
+	MaxSize    Size   `yaml:"maxSize"`    // 轮转阈值，可写 "100MB"；空=100MB
 	MaxBackups int    `yaml:"maxBackups"` // 保留份数；空=7
 	MaxAge     int    `yaml:"maxAge"`     // 保留天数；空=30
+}
+
+// RaftConfig configures raft timing/limits (otherwise hardcoded).
+type RaftConfig struct {
+	ApplyTimeout      Duration `yaml:"applyTimeout"`      // 写 raft.Apply 超时；空=5s
+	SnapshotInterval  Duration `yaml:"snapshotInterval"`  // 快照检测间隔；空=10m
+	SnapshotThreshold uint64   `yaml:"snapshotThreshold"` // 快照日志条数阈值；空=1024
 }
 
 // DebugConfig configures the isolated pprof debug server. Addr empty → pprof off.
@@ -48,6 +55,7 @@ type Config struct {
 	Snapshot          SnapshotConfig  `yaml:"snapshot"`
 	LogStore          LogStoreConfig  `yaml:"logStore"`
 	Log               LogConfig       `yaml:"log"`
+	Raft              RaftConfig      `yaml:"raft"`
 	Debug             DebugConfig     `yaml:"debug"`
 	UseInmemTransport bool            `yaml:"-"`
 }
@@ -57,6 +65,11 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	return LoadFromBytes(data)
+}
+
+// LoadFromBytes parses config YAML (shared by Load and tests).
+func LoadFromBytes(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -66,6 +79,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Snapshot.Retain == 0 {
 		cfg.Snapshot.Retain = 3
+	}
+	if cfg.Log.MaxSize <= 0 {
+		cfg.Log.MaxSize = Size(100 * (1 << 20)) // 100MB
 	}
 	return &cfg, nil
 }

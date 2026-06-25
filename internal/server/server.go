@@ -29,7 +29,12 @@ func Run(cfg *config.Config) error {
 	}
 	defer n.Shutdown()
 
-	s := store.New(n, f, 5*time.Second)
+	// 写 Apply 超时可配（cfg.Raft.ApplyTimeout），空=5s。
+	applyTimeout := 5 * time.Second
+	if d := cfg.Raft.ApplyTimeout.D(); d > 0 {
+		applyTimeout = d
+	}
+	s := store.New(n, f, applyTimeout)
 	m := metrics.New(n, f)
 	s.SetMetrics(m)
 	a := api.New(s, n, m)
