@@ -22,7 +22,7 @@ import (
 func Run(cfg *config.Config) error {
 	logger := logging.NewLogger(cfg.Log, cfg.NodeID)
 
-	f := fsm.New()
+	f := fsm.NewWithLogger(logger)
 	n, err := raftnode.New(cfg, f, logger)
 	if err != nil {
 		return fmt.Errorf("raftnode: %w", err)
@@ -86,7 +86,7 @@ func Run(cfg *config.Config) error {
 // Init bootstraps the cluster from the given config (call once, on one node).
 func Init(cfg *config.Config) error {
 	logger := logging.NewLogger(cfg.Log, cfg.NodeID+"-init")
-	f := fsm.New()
+	f := fsm.NewWithLogger(logger)
 	n, err := raftnode.New(cfg, f, logger)
 	if err != nil {
 		return err

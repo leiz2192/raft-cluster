@@ -7,23 +7,38 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 )
 
 // FSM implements raft.FSM with an in-memory map protected by a RWMutex.
 type FSM struct {
-	mu   sync.RWMutex
-	data map[string][]byte
+	mu     sync.RWMutex
+	data   map[string][]byte
+	logger hclog.Logger
 }
 
+// New creates an FSM with a silent (NullLogger) logger. Production wiring
+// should use NewWithLogger to surface decode/restore errors to operators.
 func New() *FSM {
-	return &FSM{data: make(map[string][]byte)}
+	return NewWithLogger(hclog.NewNullLogger())
+}
+
+// NewWithLogger creates an FSM whose Apply/Restore error paths log to logger.
+func NewWithLogger(logger hclog.Logger) *FSM {
+	if logger == nil {
+		logger = hclog.NewNullLogger()
+	}
+	return &FSM{data: make(map[string][]byte), logger: logger}
 }
 
 func (f *FSM) Apply(log *raft.Log) interface{} {
 	cmd, err := DecodeCommand(log.Data)
 	if err != nil {
-		// 损坏的日志条目不应让集群卡死；记录后跳过。
+		// 损坏的日志条目不应让集群卡死：记录后跳过。
+		// 返回 error 只会进入 ApplyFuture.Response()，调用方通常只读
+		// .Error()，会被静默吞掉；故显式记日志让运维可见。
+		f.logger.Error("fsm: undecodable log entry, skipping", "index", log.Index, "err", err)
 		return fmt.Errorf("decode log: %w", err)
 	}
 	f.mu.Lock()

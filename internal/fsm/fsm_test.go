@@ -3,8 +3,10 @@ package fsm
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
 )
 
@@ -80,6 +82,41 @@ func TestApplyIgnoresUnknownOp(t *testing.T) {
 	f.Apply(newLog(t, &Command{Op: "bogus", Key: "k1", Value: []byte("v")}))
 	if _, ok := f.Get("k1"); ok {
 		t.Fatal("unknown op should not write")
+	}
+}
+
+// TestApplyDecodeFailureLogsAndSkips verifies that an undecodable log entry
+// does not stall the cluster: the FSM logs the corruption (so operators can
+// see it) and skips the entry (no FSM mutation). Previously the error was
+// returned as ApplyFuture.Response() but never read by callers that only
+// inspect .Error(), so it was silently swallowed — the log is now the
+// authoritative operator-visible signal.
+func TestApplyDecodeFailureLogsAndSkips(t *testing.T) {
+	var buf bytes.Buffer
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:   "fsm-test",
+		Level:  hclog.Error,
+		Output: &buf,
+	})
+	f := NewWithLogger(logger)
+
+	resp := f.Apply(&raft.Log{Index: 42, Data: []byte("!!!not-json!!!")})
+	// The error is still returned as ApplyFuture.Response() (preserved
+	// behavior); the fix is that it is now ALSO logged, so it is not
+	// silently swallowed.
+	err, ok := resp.(error)
+	if !ok || err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("Apply corrupt log response = %v, want an error mentioning decode", resp)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "decode") {
+		t.Errorf("log output missing decode mention; got: %q", out)
+	}
+	if !strings.Contains(out, "42") {
+		t.Errorf("log output missing log index 42; got: %q", out)
+	}
+	if f.Len() != 0 {
+		t.Errorf("FSM mutated on corrupt entry; keys=%d", f.Len())
 	}
 }
 

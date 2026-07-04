@@ -72,7 +72,7 @@ func RecoverClusterSingle(cfg *config.Config, logger hclog.Logger) error {
 	if hasState {
 		// Real DR: node has existing (partial/corrupted) state.
 		// Force single-node config, restore latest snapshot, replay log to commitIndex.
-		if err := raft.RecoverCluster(raftCfg, fsm.New(), boltStore, boltStore, snaps, trans, configuration); err != nil {
+		if err := raft.RecoverCluster(raftCfg, fsm.NewWithLogger(logger), boltStore, boltStore, snaps, trans, configuration); err != nil {
 			return fmt.Errorf("recover cluster: %w", err)
 		}
 	} else {
