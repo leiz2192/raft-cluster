@@ -194,8 +194,9 @@ func fetchPeerStatus(httpAddr string) (map[string]interface{}, error) {
 var peerHTTPClient = &http.Client{Timeout: 2 * time.Second}
 
 type memberBody struct {
-	ID   string `json:"id"`
-	Addr string `json:"addr"`
+	ID       string `json:"id"`
+	Addr     string `json:"addr"`     // raft address
+	HTTPAddr string `json:"httpAddr"` // HTTP business address (for status fanout / redirects); optional
 }
 
 func (a *API) handleJoin(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +217,15 @@ func (a *API) handleJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Track the new peer's HTTP address so /cluster/status?full=true can fan
+	// out to it and redirects can map its raft addr → http addr. Best-effort:
+	// httpAddr is optional; without it the voter is in raft but not in fanout.
+	if b.HTTPAddr != "" {
+		if err := a.node.AddDynamicPeer(b.ID, b.Addr, b.HTTPAddr); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
 }
 
@@ -234,6 +244,11 @@ func (a *API) handleRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.node.RemoveServer(b.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Drop the dynamic-peer entry (no-op if it was never dynamic / never added).
+	if err := a.node.RemoveDynamicPeer(b.ID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

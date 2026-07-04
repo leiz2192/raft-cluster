@@ -177,3 +177,78 @@ func TestBootstrapClusterRejectsNodeIDNotInPeers(t *testing.T) {
 		t.Fatal("BootstrapCluster expected error for nodeID not in peers, got nil")
 	}
 }
+
+// TestDynamicPeerMergedIntoPeerHTTPAddrs verifies a runtime-added peer is
+// returned by PeerHTTPAddrs (which /cluster/status?full=true fans out over),
+// even though it is absent from the static cfg.Peers.
+func TestDynamicPeerMergedIntoPeerHTTPAddrs(t *testing.T) {
+	log := hclog.NewNullLogger()
+	f := fsm.New()
+	cfg := &config.Config{
+		NodeID:   "n1",
+		RaftAddr: "127.0.0.1:7801",
+		HTTPAddr: "127.0.0.1:8801",
+		DataDir:  "",
+		Peers:    []config.Peer{{ID: "n1", Addr: "127.0.0.1:7801", HTTPAddr: "127.0.0.1:8801"}},
+		Snapshot:          config.SnapshotConfig{Type: "inmem"},
+		UseInmemTransport: true,
+	}
+	n, err := New(cfg, f, log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer n.Shutdown()
+
+	if err := n.AddDynamicPeer("n4", "127.0.0.1:7804", "127.0.0.1:8804"); err != nil {
+		t.Fatalf("AddDynamicPeer: %v", err)
+	}
+	got := n.PeerHTTPAddrs()
+	if got["n4"] != "127.0.0.1:8804" {
+		t.Fatalf("PeerHTTPAddrs[n4] = %q, want 127.0.0.1:8804 (full map: %v)", got["n4"], got)
+	}
+	// And the dynamic peer's raft addr should also resolve to its HTTP addr.
+	if h := n.HTTPAddrForRaft("127.0.0.1:7804"); h != "127.0.0.1:8804" {
+		t.Fatalf("HTTPAddrForRaft(127.0.0.1:7804) = %q, want 127.0.0.1:8804", h)
+	}
+}
+
+// TestDynamicPeerPersistsAcrossRestart verifies the dynamic-peer store is
+// persisted under dataDir and reloaded when the node restarts with the same
+// dataDir — so a peer added via /cluster/join still appears in fanout after a
+// restart.
+func TestDynamicPeerPersistsAcrossRestart(t *testing.T) {
+	log := hclog.NewNullLogger()
+	dir := t.TempDir()
+	mkcfg := func() *config.Config {
+		return &config.Config{
+			NodeID:   "p1",
+			RaftAddr: "127.0.0.1:7802",
+			HTTPAddr: "127.0.0.1:8802",
+			DataDir:  dir,
+			Peers:    []config.Peer{{ID: "p1", Addr: "127.0.0.1:7802", HTTPAddr: "127.0.0.1:8802"}},
+			Snapshot:          config.SnapshotConfig{Type: "file", Path: filepath.Join(dir, "snaps"), Retain: 1},
+			UseInmemTransport: true,
+		}
+	}
+
+	n1, err := New(mkcfg(), fsm.New(), log)
+	if err != nil {
+		t.Fatalf("New(1): %v", err)
+	}
+	if err := n1.AddDynamicPeer("p2", "127.0.0.1:7803", "127.0.0.1:8803"); err != nil {
+		t.Fatalf("AddDynamicPeer: %v", err)
+	}
+	if err := n1.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	n2, err := New(mkcfg(), fsm.New(), log)
+	if err != nil {
+		t.Fatalf("New(2): %v", err)
+	}
+	defer n2.Shutdown()
+	got := n2.PeerHTTPAddrs()
+	if got["p2"] != "127.0.0.1:8803" {
+		t.Fatalf("after restart PeerHTTPAddrs[p2] = %q, want 127.0.0.1:8803 (full: %v)", got["p2"], got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/raft"
 	"raft-meta/internal/config"
 	"raft-meta/internal/fsm"
+	"raft-meta/internal/peers"
 	"raft-meta/internal/raftstore"
 	"raft-meta/internal/snapshot"
 )
@@ -23,6 +24,7 @@ type Node struct {
 	stable      raft.StableStore
 	storeCloser io.Closer // non-nil when the log/stable backend holds resources (e.g. BoltDB); closed on Shutdown
 	snaps       raft.SnapshotStore
+	dynPeers    *peers.Store // runtime-added peers (via /cluster/join), persisted under dataDir
 	logger      hclog.Logger
 }
 
@@ -87,6 +89,16 @@ func New(cfg *config.Config, f *fsm.FSM, logger hclog.Logger) (*Node, error) {
 		return nil, err
 	}
 	n.snaps = snaps
+
+	// Dynamic peers (added at runtime via /cluster/join) persist under dataDir
+	// so they survive restart. Empty dataDir → in-memory only (tests).
+	n.dynPeers = peers.New(dynamicPeersPath(cfg))
+	if err := n.dynPeers.Load(); err != nil {
+		// A corrupt sidecar file must not silently drop dynamic peers, but it
+		// also must not block startup of an otherwise-healthy node. Warn and
+		// continue empty; operator can delete the file.
+		logger.Warn("loading dynamic peers failed; starting with empty peer set", "err", err)
+	}
 
 	r, err := raft.NewRaft(raftCfg, f, n.logs, n.stable, n.snaps, n.trans)
 	if err != nil {
@@ -162,12 +174,19 @@ func (n *Node) Raft() *raft.Raft { return n.raft }
 // ID returns this node's configured ID.
 func (n *Node) ID() string { return n.cfg.NodeID }
 
-// PeerHTTPAddrs returns a map of peer ID -> HTTP address, from cfg.Peers.
-// Used by the API to fan out cluster-status queries to all nodes. Peers
-// without a configured httpAddr are omitted.
+// PeerHTTPAddrs returns a map of peer ID -> HTTP address, merging the static
+// cfg.Peers with runtime-added dynamic peers. Used by the API to fan out
+// cluster-status queries to all nodes (including /cluster/join'd voters).
+// Dynamic peers override static on ID conflict (they are the live truth).
+// Peers without a configured httpAddr are omitted.
 func (n *Node) PeerHTTPAddrs() map[string]string {
 	out := make(map[string]string, len(n.cfg.Peers))
 	for _, p := range n.cfg.Peers {
+		if p.HTTPAddr != "" {
+			out[p.ID] = p.HTTPAddr
+		}
+	}
+	for _, p := range n.dynPeers.All() {
 		if p.HTTPAddr != "" {
 			out[p.ID] = p.HTTPAddr
 		}
@@ -176,10 +195,16 @@ func (n *Node) PeerHTTPAddrs() map[string]string {
 }
 
 // HTTPAddrForRaft returns the HTTP address of the peer whose raft address
-// matches raftAddr, or "" if unknown. Used to map a leader's raft address
-// (from raft.Leader()) to its HTTP address for 307 redirects.
+// matches raftAddr, or "" if unknown. Checks static cfg.Peers then dynamic
+// peers. Used to map a leader's raft address (from raft.Leader()) to its HTTP
+// address for 307 redirects.
 func (n *Node) HTTPAddrForRaft(raftAddr string) string {
 	for _, p := range n.cfg.Peers {
+		if p.Addr == raftAddr {
+			return p.HTTPAddr
+		}
+	}
+	for _, p := range n.dynPeers.All() {
 		if p.Addr == raftAddr {
 			return p.HTTPAddr
 		}

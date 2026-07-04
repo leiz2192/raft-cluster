@@ -593,3 +593,56 @@ func TestFollowerConsistentReadRedirectPreservesPathAndQuery(t *testing.T) {
 		t.Fatalf("Location = %q, want %q", got, want)
 	}
 }
+
+// TestJoinAddsDynamicPeerToFullStatus verifies that a voter added via
+// /cluster/join (with httpAddr) appears in /cluster/status?full=true fanout.
+// Previously fanout used only static cfg.Peers, so dynamically-joined voters
+// were invisible.
+func TestJoinAddsDynamicPeerToFullStatus(t *testing.T) {
+	a, _ := newAPI(t)
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	// Stub HTTP server for the joining "node4" — returns a follower status.
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"nodeID": "node4", "state": "Follower", "leader": "127.0.0.1:7201",
+		})
+	}))
+	defer stub.Close()
+
+	// Join node4 with its raft addr + httpAddr.
+	joinBody, _ := json.Marshal(map[string]string{
+		"id":       "node4",
+		"addr":     "127.0.0.1:7204",
+		"httpAddr": strings.TrimPrefix(stub.URL, "http://"),
+	})
+	resp, err := http.Post(srv.URL+"/cluster/join", "application/json", bytes.NewReader(joinBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /cluster/join status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// full status should now fan out to node4 (via the dynamic-peer store).
+	full, err := http.Get(srv.URL + "/cluster/status?full=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer full.Body.Close()
+	var got struct {
+		Nodes map[string]map[string]interface{} `json:"nodes"`
+	}
+	if err := json.NewDecoder(full.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	node4, ok := got.Nodes["node4"]
+	if !ok {
+		t.Fatalf("node4 missing from full status; got nodes: %v", got.Nodes)
+	}
+	if node4["reachable"] != true {
+		t.Errorf("node4 reachable = %v, want true (err=%v)", node4["reachable"], node4["error"])
+	}
+}

@@ -84,8 +84,8 @@ pprof 挂在**独立调试端口**（`debug.addr`，各节点 127.0.0.1/2/3:6060
 
     raft-meta recover -config configs/node1.yaml  # 强制单节点恢复
     raft-meta start  -config configs/node1.yaml   # 单节点自选主对外
-    # 再 AddVoter 2 个新节点恢复 3 节点：
-    curl -X POST http://127.0.0.1:8000/cluster/join -d '{"id":"node2","addr":"127.0.0.2:7000"}'
+    # 再 AddVoter 2 个新节点恢复 3 节点（httpAddr 可选，提供后该节点进入 /cluster/status?full=true 扇出）：
+    curl -X POST http://127.0.0.1:8000/cluster/join -d '{"id":"node2","addr":"127.0.0.2:7000","httpAddr":"127.0.0.2:8000"}'
 
 ## 测试
 
