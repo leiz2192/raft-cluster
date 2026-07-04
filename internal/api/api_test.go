@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/raft"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"raft-meta/internal/config"
 	"raft-meta/internal/fsm"
@@ -443,5 +444,152 @@ func TestClusterStatusFullUnreachable(t *testing.T) {
 		if got.Nodes[id]["error"] == nil || got.Nodes[id]["error"] == "" {
 			t.Errorf("node %q should have error", id)
 		}
+	}
+}
+
+// newFollowerCluster spins up a 3-node inmem raft cluster, waits for a leader,
+// and returns an API wired around a follower node, plus the leader's configured
+// HTTP address. Used to exercise the non-leader redirect path through the real
+// HTTP handler. The caller must call the returned cleanup func.
+func newFollowerCluster(t *testing.T) (*API, string, func()) {
+	t.Helper()
+	log := hclog.NewNullLogger()
+	peers := []config.Peer{
+		{ID: "n1", Addr: "127.0.0.1:7301", HTTPAddr: "127.0.0.1:8301"},
+		{ID: "n2", Addr: "127.0.0.1:7302", HTTPAddr: "127.0.0.1:8302"},
+		{ID: "n3", Addr: "127.0.0.1:7303", HTTPAddr: "127.0.0.1:8303"},
+	}
+	type nodeFSM struct {
+		n *raftnode.Node
+		f *fsm.FSM
+	}
+	nodes := make([]nodeFSM, 3)
+	for i := range nodes {
+		cfg := &config.Config{
+			NodeID: peers[i].ID, RaftAddr: peers[i].Addr, HTTPAddr: peers[i].HTTPAddr,
+			Peers:             peers,
+			Snapshot:          config.SnapshotConfig{Type: "inmem"},
+			UseInmemTransport: true,
+		}
+		f := fsm.New()
+		n, err := raftnode.New(cfg, f, log)
+		if err != nil {
+			t.Fatalf("node %s: %v", peers[i].ID, err)
+		}
+		if err := n.BootstrapCluster(); err != nil {
+			t.Fatalf("bootstrap %s: %v", peers[i].ID, err)
+		}
+		nodes[i] = nodeFSM{n, f}
+	}
+	// Wire inmem transports together so the cluster can reach quorum.
+	for i, a := range nodes {
+		ta := a.n.Transport().(*raft.InmemTransport)
+		for j, b := range nodes {
+			if i == j {
+				continue
+			}
+			tb := b.n.Transport().(*raft.InmemTransport)
+			ta.Connect(raft.ServerAddress(peers[j].Addr), tb)
+		}
+	}
+	cleanup := func() {
+		for _, x := range nodes {
+			_ = x.n.Shutdown()
+		}
+	}
+
+	// Wait for a leader.
+	deadline := time.Now().Add(5 * time.Second)
+	var leader *raftnode.Node
+	for time.Now().Before(deadline) {
+		for _, x := range nodes {
+			if x.n.IsLeader() {
+				leader = x.n
+				break
+			}
+		}
+		if leader != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if leader == nil {
+		t.Fatal("no leader elected")
+	}
+
+	// Pick a follower and build its API.
+	var follower *raftnode.Node
+	var followerFSM *fsm.FSM
+	for _, x := range nodes {
+		if !x.n.IsLeader() {
+			follower, followerFSM = x.n, x.f
+			break
+		}
+	}
+	if follower == nil {
+		t.Fatal("no follower found")
+	}
+	leaderHTTP := follower.HTTPAddrForRaft(follower.LeaderAddr())
+	if leaderHTTP == "" {
+		t.Fatalf("follower LeaderAddr=%q did not map to a peer HTTP addr", follower.LeaderAddr())
+	}
+	s := store.New(follower, followerFSM, 2*time.Second)
+	m := metrics.New(follower, followerFSM)
+	s.SetMetrics(m)
+	return New(s, follower, m), leaderHTTP, cleanup
+}
+
+// TestFollowerWriteRedirectPreservesPathAndQuery asserts that a PUT to a
+// follower responds 307 with a Location that preserves the original path and
+// query, so a redirect-following client lands on the same resource on the
+// leader instead of the root.
+func TestFollowerWriteRedirectPreservesPathAndQuery(t *testing.T) {
+	a, leaderHTTP, cleanup := newFollowerCluster(t)
+	defer cleanup()
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	// Client that does NOT auto-follow, so we can inspect the 307.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	body, _ := json.Marshal(map[string]string{"value": "v"})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/kv/k1?ttl=30", bytes.NewReader(body))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("PUT on follower status = %d, want 307", resp.StatusCode)
+	}
+	want := "http://" + leaderHTTP + "/kv/k1?ttl=30"
+	if got := resp.Header.Get("Location"); got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+// TestFollowerConsistentReadRedirectPreservesPathAndQuery asserts the same for
+// a ?consistent=true GET on a follower (read-side redirect path).
+func TestFollowerConsistentReadRedirectPreservesPathAndQuery(t *testing.T) {
+	a, leaderHTTP, cleanup := newFollowerCluster(t)
+	defer cleanup()
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(srv.URL + "/kv/k1?consistent=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("consistent GET on follower status = %d, want 307", resp.StatusCode)
+	}
+	want := "http://" + leaderHTTP + "/kv/k1?consistent=true"
+	if got := resp.Header.Get("Location"); got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
 	}
 }

@@ -68,13 +68,13 @@ func (a *API) handleKV(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := a.store.Put(key, []byte(b.Value)); err != nil {
-			a.writeWriteError(w, err)
+			a.writeWriteError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	case http.MethodDelete:
 		if err := a.store.Delete(key); err != nil {
-			a.writeWriteError(w, err)
+			a.writeWriteError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -258,16 +258,18 @@ func (a *API) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "snapshot taken"})
 }
 
-func (a *API) writeWriteError(w http.ResponseWriter, err error) {
+func (a *API) writeWriteError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, store.ErrNotLeader) {
-		a.redirectToLeader(w, nil)
+		a.redirectToLeader(w, r)
 		return
 	}
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 // redirectToLeader sends 307 to the leader's HTTP address when known,
-// else 503. Maps raft address to http address via the configured peers.
+// else 503. Maps raft address to http address via the configured peers. The
+// original request's path and query are preserved in the Location so a
+// redirect-following client lands on the same resource on the leader.
 func (a *API) redirectToLeader(w http.ResponseWriter, r *http.Request) {
 	leader := a.node.LeaderAddr()
 	if leader == "" {
@@ -280,9 +282,16 @@ func (a *API) redirectToLeader(w http.ResponseWriter, r *http.Request) {
 	if httpAddr == "" {
 		httpAddr = leader
 	}
+	// Preserve the original path + query so the redirected request targets the
+	// same resource. r may be nil only if a future caller bypasses the handler;
+	// default to "/" in that case.
+	uri := "/"
+	if r != nil {
+		uri = r.URL.RequestURI()
+	}
 	// NOTE: Location header MUST be set before WriteHeader — writeJSON below
 	// calls WriteHeader(307).
-	w.Header().Set("Location", "http://"+httpAddr)
+	w.Header().Set("Location", "http://"+httpAddr+uri)
 	writeJSON(w, http.StatusTemporaryRedirect, map[string]string{
 		"leader": httpAddr,
 	})
