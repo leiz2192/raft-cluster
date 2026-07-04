@@ -145,3 +145,35 @@ func TestBoltDBPersistenceRoundtrip(t *testing.T) {
 	v, _ := f2.Get("persisted")
 	t.Fatalf("persisted data lost after restart: got %q", v)
 }
+
+// TestBootstrapClusterRejectsNodeIDNotInPeers verifies that bootstrapping a
+// cluster when the local nodeID is not among the configured peers is rejected
+// up front with a clear error. A bootstrap node must be a voter in the
+// bootstrap configuration, otherwise it would seed a cluster it cannot elect
+// itself into. (The self-in-peers check lives here, not in config.validate,
+// so `start` nodes joining dynamically can legitimately omit themselves.)
+func TestBootstrapClusterRejectsNodeIDNotInPeers(t *testing.T) {
+	log := hclog.NewNullLogger()
+	f := fsm.New()
+	cfg := &config.Config{
+		NodeID:   "lonely",
+		RaftAddr: "127.0.0.1:7601",
+		HTTPAddr: "127.0.0.1:0",
+		DataDir:  "",
+		// peers lists everyone except the local nodeID "lonely".
+		Peers: []config.Peer{
+			{ID: "n1", Addr: "127.0.0.1:7602"},
+			{ID: "n2", Addr: "127.0.0.1:7603"},
+		},
+		Snapshot:          config.SnapshotConfig{Type: "inmem"},
+		UseInmemTransport: true,
+	}
+	n, err := New(cfg, f, log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer n.Shutdown()
+	if err := n.BootstrapCluster(); err == nil {
+		t.Fatal("BootstrapCluster expected error for nodeID not in peers, got nil")
+	}
+}

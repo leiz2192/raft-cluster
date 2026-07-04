@@ -99,17 +99,20 @@ snapshot:
 	}
 }
 
-// TestLoadRejectsNodeIDNotInPeers verifies that a nodeID absent from the
-// peers list is rejected at config load time, rather than failing later at
-// redirect/status-fanout with a confusing "self not found".
-func TestLoadRejectsNodeIDNotInPeers(t *testing.T) {
+// TestLoadAcceptsNodeIDNotInPeers verifies that a nodeID absent from the
+// peers list is ACCEPTED at load time. A node started via `start` (not
+// bootstrapping) — e.g. a dynamically added voter joining via /cluster/join —
+// legitimately lists only the existing cluster members in `peers` (its HTTP
+// peer map) and need not include itself. The self-in-peers invariant is
+// enforced at bootstrap time (BootstrapCluster), not here.
+func TestLoadAcceptsNodeIDNotInPeers(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "bad.yaml")
+	path := filepath.Join(dir, "nodeX.yaml")
 	content := `
 nodeID: nodeX
 raftAddr: 127.0.0.1:7001
 httpAddr: 127.0.0.1:8001
-dataDir: ./data/node1
+dataDir: ./data/nodeX
 peers:
   - id: node1
     addr: 127.0.0.1:7001
@@ -119,13 +122,12 @@ peers:
     addr: 127.0.0.1:7003
 snapshot:
   type: file
-  path: ./data/node1/snapshots
+  path: ./data/nodeX/snapshots
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for nodeID not in peers, got nil")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("expected nodeID-not-in-peers config to load (start/dynamic-join case), got: %v", err)
 	}
 }
