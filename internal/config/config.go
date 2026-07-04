@@ -108,13 +108,3 @@ func (c *Config) validate() error {
 	}
 	return nil
 }
-
-// FindSelf returns this node's own peer entry.
-func (c *Config) FindSelf() (*Peer, error) {
-	for i := range c.Peers {
-		if c.Peers[i].ID == c.NodeID {
-			return &c.Peers[i], nil
-		}
-	}
-	return nil, fmt.Errorf("node %q not found in peers", c.NodeID)
-}
