@@ -8,14 +8,21 @@ import (
 type Op string
 
 const (
-	OpPut    Op = "put"
-	OpDelete Op = "delete"
+	OpPut        Op = "put"
+	OpDelete     Op = "delete"
+	OpAddPeer    Op = "addPeer"    // record a runtime-added peer's HTTP addr
+	OpRemovePeer Op = "removePeer" // drop a runtime-added peer by ID
 )
 
+// Command is the replicated log entry. KV ops use Key/Value; peer ops use
+// PeerID / PeerAddr (raft) / PeerHTTP (HTTP business addr).
 type Command struct {
-	Op    Op     `json:"op"`
-	Key   string `json:"key"`
-	Value []byte `json:"value,omitempty"`
+	Op       Op     `json:"op"`
+	Key      string `json:"key,omitempty"`
+	Value    []byte `json:"value,omitempty"`
+	PeerID   string `json:"peerId,omitempty"`
+	PeerAddr string `json:"peerAddr,omitempty"`
+	PeerHTTP string `json:"peerHttp,omitempty"`
 }
 
 func EncodeCommand(c *Command) ([]byte, error) {

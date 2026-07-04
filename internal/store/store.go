@@ -68,6 +68,33 @@ func (s *Store) delete(key string) error {
 	return s.node.Apply(cmd, s.applyTimeout).Error()
 }
 
+// AddPeer records a runtime-added peer (via /cluster/join) by replicating an
+// AddPeer command. All nodes apply it, so the dynamic-peer map is cluster-wide
+// consistent and survives failover. Call after AddVoter succeeds.
+func (s *Store) AddPeer(id, raftAddr, httpAddr string) error {
+	if !s.node.IsLeader() {
+		return ErrNotLeader
+	}
+	cmd, err := fsm.EncodeCommand(&fsm.Command{Op: fsm.OpAddPeer, PeerID: id, PeerAddr: raftAddr, PeerHTTP: httpAddr})
+	if err != nil {
+		return err
+	}
+	return s.node.Apply(cmd, s.applyTimeout).Error()
+}
+
+// RemovePeer drops a runtime-added peer by ID via a replicated RemovePeer
+// command. Idempotent. Call after RemoveServer succeeds.
+func (s *Store) RemovePeer(id string) error {
+	if !s.node.IsLeader() {
+		return ErrNotLeader
+	}
+	cmd, err := fsm.EncodeCommand(&fsm.Command{Op: fsm.OpRemovePeer, PeerID: id})
+	if err != nil {
+		return err
+	}
+	return s.node.Apply(cmd, s.applyTimeout).Error()
+}
+
 // Get reads from local FSM. On a leader this is strongly consistent.
 // On a follower it may be stale (脏读) — caller accepts this by default.
 func (s *Store) Get(key string) ([]byte, bool) {

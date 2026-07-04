@@ -94,3 +94,44 @@ func TestPutOnFollowerReturnsErrNotLeader(t *testing.T) {
 		t.Fatalf("Delete on non-leader = %v, want ErrNotLeader", err)
 	}
 }
+
+// TestAddPeerOnLeaderApplies verifies AddPeer replicates an AddPeer command:
+// after it returns, the leader's FSM has the peer.
+func TestAddPeerOnLeaderApplies(t *testing.T) {
+	s, f := newLeaderStore(t)
+	if err := s.AddPeer("n4", "127.0.0.1:7104", "127.0.0.1:8104"); err != nil {
+		t.Fatalf("AddPeer: %v", err)
+	}
+	var found bool
+	for _, p := range f.Peers() {
+		if p.ID == "n4" && p.HTTPAddr == "127.0.0.1:8104" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("FSM.Peers = %v, want n4 with http 127.0.0.1:8104", f.Peers())
+	}
+}
+
+// TestAddPeerOnFollowerReturnsErrNotLeader verifies AddPeer fails fast on a
+// non-leader (peer ops, like writes, are leader-only).
+func TestAddPeerOnFollowerReturnsErrNotLeader(t *testing.T) {
+	log := hclog.NewNullLogger()
+	f := fsm.New()
+	cfg := &config.Config{
+		NodeID:            "n2",
+		RaftAddr:          "127.0.0.1:7102",
+		Peers:             []config.Peer{{ID: "n2", Addr: "127.0.0.1:7102"}},
+		Snapshot:          config.SnapshotConfig{Type: "inmem"},
+		UseInmemTransport: true,
+	}
+	n, err := raftnode.New(cfg, f, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { n.Shutdown() })
+	s := New(n, f, 2*time.Second)
+	if err := s.AddPeer("n4", "127.0.0.1:7104", "127.0.0.1:8104"); !errors.Is(err, ErrNotLeader) {
+		t.Fatalf("AddPeer on non-leader = %v, want ErrNotLeader", err)
+	}
+}

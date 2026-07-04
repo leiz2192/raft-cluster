@@ -217,11 +217,11 @@ func (a *API) handleJoin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Track the new peer's HTTP address so /cluster/status?full=true can fan
-	// out to it and redirects can map its raft addr → http addr. Best-effort:
+	// Replicate the new peer's HTTP address (AddPeer via raft) so every node
+	// can fan out status to it and map its raft addr → http addr for redirects.
 	// httpAddr is optional; without it the voter is in raft but not in fanout.
 	if b.HTTPAddr != "" {
-		if err := a.node.AddDynamicPeer(b.ID, b.Addr, b.HTTPAddr); err != nil {
+		if err := a.store.AddPeer(b.ID, b.Addr, b.HTTPAddr); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -247,8 +247,9 @@ func (a *API) handleRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Drop the dynamic-peer entry (no-op if it was never dynamic / never added).
-	if err := a.node.RemoveDynamicPeer(b.ID); err != nil {
+	// Drop the dynamic-peer entry via a replicated RemovePeer (no-op if it was
+	// never added; idempotent).
+	if err := a.store.RemovePeer(b.ID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

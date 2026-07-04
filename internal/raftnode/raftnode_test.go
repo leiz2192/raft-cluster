@@ -178,10 +178,11 @@ func TestBootstrapClusterRejectsNodeIDNotInPeers(t *testing.T) {
 	}
 }
 
-// TestDynamicPeerMergedIntoPeerHTTPAddrs verifies a runtime-added peer is
-// returned by PeerHTTPAddrs (which /cluster/status?full=true fans out over),
-// even though it is absent from the static cfg.Peers.
-func TestDynamicPeerMergedIntoPeerHTTPAddrs(t *testing.T) {
+// TestFSMPeerAppearsInPeerHTTPAddrs verifies a peer recorded via a replicated
+// AddPeer command is returned by PeerHTTPAddrs / HTTPAddrForRaft (which
+// /cluster/status?full=true and leader redirects use), even though it is
+// absent from the static cfg.Peers.
+func TestFSMPeerAppearsInPeerHTTPAddrs(t *testing.T) {
 	log := hclog.NewNullLogger()
 	f := fsm.New()
 	cfg := &config.Config{
@@ -198,25 +199,35 @@ func TestDynamicPeerMergedIntoPeerHTTPAddrs(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer n.Shutdown()
+	if err := n.BootstrapCluster(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	// Wait for leader so Apply commits locally.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !n.IsLeader() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !n.IsLeader() {
+		t.Fatal("not leader")
+	}
 
-	if err := n.AddDynamicPeer("n4", "127.0.0.1:7804", "127.0.0.1:8804"); err != nil {
-		t.Fatalf("AddDynamicPeer: %v", err)
+	cmd, _ := fsm.EncodeCommand(&fsm.Command{Op: fsm.OpAddPeer, PeerID: "n4", PeerAddr: "127.0.0.1:7804", PeerHTTP: "127.0.0.1:8804"})
+	if err := n.Apply(cmd, 2*time.Second).Error(); err != nil {
+		t.Fatalf("Apply AddPeer: %v", err)
 	}
 	got := n.PeerHTTPAddrs()
 	if got["n4"] != "127.0.0.1:8804" {
-		t.Fatalf("PeerHTTPAddrs[n4] = %q, want 127.0.0.1:8804 (full map: %v)", got["n4"], got)
+		t.Fatalf("PeerHTTPAddrs[n4] = %q, want 127.0.0.1:8804 (full: %v)", got["n4"], got)
 	}
-	// And the dynamic peer's raft addr should also resolve to its HTTP addr.
 	if h := n.HTTPAddrForRaft("127.0.0.1:7804"); h != "127.0.0.1:8804" {
 		t.Fatalf("HTTPAddrForRaft(127.0.0.1:7804) = %q, want 127.0.0.1:8804", h)
 	}
 }
 
-// TestDynamicPeerPersistsAcrossRestart verifies the dynamic-peer store is
-// persisted under dataDir and reloaded when the node restarts with the same
-// dataDir — so a peer added via /cluster/join still appears in fanout after a
-// restart.
-func TestDynamicPeerPersistsAcrossRestart(t *testing.T) {
+// TestFSMPeerPersistsAcrossRestart verifies a peer recorded via a replicated
+// AddPeer survives restart: the FSM is restored from raft snapshot + log
+// replay, so the peer reappears in PeerHTTPAddrs without any sidecar file.
+func TestFSMPeerPersistsAcrossRestart(t *testing.T) {
 	log := hclog.NewNullLogger()
 	dir := t.TempDir()
 	mkcfg := func() *config.Config {
@@ -235,8 +246,23 @@ func TestDynamicPeerPersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(1): %v", err)
 	}
-	if err := n1.AddDynamicPeer("p2", "127.0.0.1:7803", "127.0.0.1:8803"); err != nil {
-		t.Fatalf("AddDynamicPeer: %v", err)
+	if err := n1.BootstrapCluster(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !n1.IsLeader() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !n1.IsLeader() {
+		t.Fatal("not leader")
+	}
+	cmd, _ := fsm.EncodeCommand(&fsm.Command{Op: fsm.OpAddPeer, PeerID: "p2", PeerAddr: "127.0.0.1:7803", PeerHTTP: "127.0.0.1:8803"})
+	if err := n1.Apply(cmd, 2*time.Second).Error(); err != nil {
+		t.Fatalf("Apply AddPeer: %v", err)
+	}
+	// Force a snapshot so the peer is captured in the snapshot (not just log).
+	if err := n1.Raft().Snapshot().Error(); err != nil {
+		t.Fatalf("Snapshot: %v", err)
 	}
 	if err := n1.Shutdown(); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -247,8 +273,13 @@ func TestDynamicPeerPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("New(2): %v", err)
 	}
 	defer n2.Shutdown()
-	got := n2.PeerHTTPAddrs()
-	if got["p2"] != "127.0.0.1:8803" {
-		t.Fatalf("after restart PeerHTTPAddrs[p2] = %q, want 127.0.0.1:8803 (full: %v)", got["p2"], got)
+	// Wait for restore + log replay to repopulate the FSM.
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if n2.PeerHTTPAddrs()["p2"] == "127.0.0.1:8803" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	t.Fatalf("after restart PeerHTTPAddrs = %v, want p2=127.0.0.1:8803", n2.PeerHTTPAddrs())
 }

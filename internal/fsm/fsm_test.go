@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+	"raft-meta/internal/config"
 )
 
 // memSink adapts a *bytes.Buffer to raft.SnapshotSink for testing Persist.
@@ -82,6 +83,65 @@ func TestApplyIgnoresUnknownOp(t *testing.T) {
 	f.Apply(newLog(t, &Command{Op: "bogus", Key: "k1", Value: []byte("v")}))
 	if _, ok := f.Get("k1"); ok {
 		t.Fatal("unknown op should not write")
+	}
+}
+
+// findPeer returns the peer with the given ID from ps, or false.
+func findPeer(ps []config.Peer, id string) (config.Peer, bool) {
+	for _, p := range ps {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return config.Peer{}, false
+}
+
+// TestApplyAddRemovePeer verifies AddPeer upserts a peer into the FSM's
+// dynamic-peer map and RemovePeer drops it. These ops are replicated via raft,
+// so the map is cluster-wide consistent.
+func TestApplyAddRemovePeer(t *testing.T) {
+	f := New()
+	f.Apply(newLog(t, &Command{Op: OpAddPeer, PeerID: "n4", PeerAddr: "127.0.0.1:7004", PeerHTTP: "127.0.0.1:8004"}))
+	p, ok := findPeer(f.Peers(), "n4")
+	if !ok || p.Addr != "127.0.0.1:7004" || p.HTTPAddr != "127.0.0.1:8004" {
+		t.Fatalf("Peers = %v, want n4{addr=127.0.0.1:7004 http=127.0.0.1:8004}", f.Peers())
+	}
+	// Upsert: second Add with same ID replaces, not appends.
+	f.Apply(newLog(t, &Command{Op: OpAddPeer, PeerID: "n4", PeerAddr: "127.0.0.1:7004", PeerHTTP: "127.0.0.1:9004"}))
+	if len(f.Peers()) != 1 {
+		t.Fatalf("after upsert Peers len = %d, want 1", len(f.Peers()))
+	}
+	f.Apply(newLog(t, &Command{Op: OpRemovePeer, PeerID: "n4"}))
+	if len(f.Peers()) != 0 {
+		t.Fatalf("after remove Peers = %v, want empty", f.Peers())
+	}
+}
+
+// TestSnapshotRestoreIncludesPeers verifies the dynamic-peer map is captured in
+// snapshots and restored — so peers survive snapshot+restart on every node.
+func TestSnapshotRestoreIncludesPeers(t *testing.T) {
+	src := New()
+	src.Apply(newLog(t, &Command{Op: OpAddPeer, PeerID: "n4", PeerAddr: "127.0.0.1:7004", PeerHTTP: "127.0.0.1:8004"}))
+	src.Apply(newLog(t, &Command{Op: OpPut, Key: "k1", Value: []byte("v1")}))
+
+	snap, err := src.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := snap.Persist(&memSink{buf: &buf}); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	dst := New()
+	if err := dst.Restore(io.NopCloser(bytes.NewReader(buf.Bytes()))); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, ok := findPeer(dst.Peers(), "n4"); !ok {
+		t.Errorf("after restore Peers = %v, want n4 present", dst.Peers())
+	}
+	if got, ok := dst.Get("k1"); !ok || string(got) != "v1" {
+		t.Errorf("after restore Get(k1) = %q,%v, want v1,true", got, ok)
 	}
 }
 

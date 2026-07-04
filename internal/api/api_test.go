@@ -594,27 +594,107 @@ func TestFollowerConsistentReadRedirectPreservesPathAndQuery(t *testing.T) {
 	}
 }
 
-// TestJoinAddsDynamicPeerToFullStatus verifies that a voter added via
-// /cluster/join (with httpAddr) appears in /cluster/status?full=true fanout.
-// Previously fanout used only static cfg.Peers, so dynamically-joined voters
-// were invisible.
+// newCluster3 spins up a 3-node inmem raft cluster, waits for a leader, and
+// returns the leader's API, a follower node, and the leader's configured HTTP
+// address. Used to test that /cluster/join replicates the new peer's HTTP addr
+// to ALL nodes (cluster-wide), not just the leader. The caller must call cleanup.
+func newCluster3(t *testing.T) (*API, *raftnode.Node, func()) {
+	t.Helper()
+	log := hclog.NewNullLogger()
+	peers := []config.Peer{
+		{ID: "n1", Addr: "127.0.0.1:7301", HTTPAddr: "127.0.0.1:8301"},
+		{ID: "n2", Addr: "127.0.0.1:7302", HTTPAddr: "127.0.0.1:8302"},
+		{ID: "n3", Addr: "127.0.0.1:7303", HTTPAddr: "127.0.0.1:8303"},
+	}
+	type nodeFSM struct {
+		n *raftnode.Node
+		f *fsm.FSM
+	}
+	nodes := make([]nodeFSM, 3)
+	for i := range nodes {
+		cfg := &config.Config{
+			NodeID: peers[i].ID, RaftAddr: peers[i].Addr, HTTPAddr: peers[i].HTTPAddr,
+			Peers:             peers,
+			Snapshot:          config.SnapshotConfig{Type: "inmem"},
+			UseInmemTransport: true,
+		}
+		f := fsm.New()
+		n, err := raftnode.New(cfg, f, log)
+		if err != nil {
+			t.Fatalf("node %s: %v", peers[i].ID, err)
+		}
+		if err := n.BootstrapCluster(); err != nil {
+			t.Fatalf("bootstrap %s: %v", peers[i].ID, err)
+		}
+		nodes[i] = nodeFSM{n, f}
+	}
+	for i, a := range nodes {
+		ta := a.n.Transport().(*raft.InmemTransport)
+		for j, b := range nodes {
+			if i == j {
+				continue
+			}
+			tb := b.n.Transport().(*raft.InmemTransport)
+			ta.Connect(raft.ServerAddress(peers[j].Addr), tb)
+		}
+	}
+	cleanup := func() {
+		for _, x := range nodes {
+			_ = x.n.Shutdown()
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var leader, follower *raftnode.Node
+	var leaderFSM *fsm.FSM
+	for time.Now().Before(deadline) {
+		for _, x := range nodes {
+			if x.n.IsLeader() {
+				leader, leaderFSM = x.n, x.f
+				break
+			}
+		}
+		if leader != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if leader == nil {
+		t.Fatal("no leader elected")
+	}
+	for _, x := range nodes {
+		if !x.n.IsLeader() {
+			follower = x.n
+			break
+		}
+	}
+	if follower == nil {
+		t.Fatal("no follower found")
+	}
+	s := store.New(leader, leaderFSM, 2*time.Second)
+	m := metrics.New(leader, leaderFSM)
+	s.SetMetrics(m)
+	return New(s, leader, m), follower, cleanup
+}
+
+// TestJoinAddsDynamicPeerToFullStatus verifies a voter added via /cluster/join
+// (with httpAddr) appears in /cluster/status?full=true fanout on the leader.
 func TestJoinAddsDynamicPeerToFullStatus(t *testing.T) {
-	a, _ := newAPI(t)
+	a, _, cleanup := newCluster3(t)
+	defer cleanup()
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()
 
-	// Stub HTTP server for the joining "node4" — returns a follower status.
+	// Stub HTTP server for the joining "node4".
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"nodeID": "node4", "state": "Follower", "leader": "127.0.0.1:7201",
+			"nodeID": "node4", "state": "Follower", "leader": "127.0.0.1:7301",
 		})
 	}))
 	defer stub.Close()
 
-	// Join node4 with its raft addr + httpAddr.
 	joinBody, _ := json.Marshal(map[string]string{
 		"id":       "node4",
-		"addr":     "127.0.0.1:7204",
+		"addr":     "127.0.0.1:7304",
 		"httpAddr": strings.TrimPrefix(stub.URL, "http://"),
 	})
 	resp, err := http.Post(srv.URL+"/cluster/join", "application/json", bytes.NewReader(joinBody))
@@ -626,7 +706,6 @@ func TestJoinAddsDynamicPeerToFullStatus(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// full status should now fan out to node4 (via the dynamic-peer store).
 	full, err := http.Get(srv.URL + "/cluster/status?full=true")
 	if err != nil {
 		t.Fatal(err)
@@ -640,9 +719,49 @@ func TestJoinAddsDynamicPeerToFullStatus(t *testing.T) {
 	}
 	node4, ok := got.Nodes["node4"]
 	if !ok {
-		t.Fatalf("node4 missing from full status; got nodes: %v", got.Nodes)
+		t.Fatalf("node4 missing from leader full status; got nodes: %v", got.Nodes)
 	}
 	if node4["reachable"] != true {
 		t.Errorf("node4 reachable = %v, want true (err=%v)", node4["reachable"], node4["error"])
 	}
+}
+
+// TestJoinReplicatesPeerToFollower verifies the new peer's HTTP addr is
+// replicated to followers (via the AddPeer raft command), so a follower can
+// also fan out status to the joined node and map its raft addr for redirects.
+// This is the cluster-wide guarantee that the prior sidecar-file approach
+// (leader-local only) could not provide.
+func TestJoinReplicatesPeerToFollower(t *testing.T) {
+	a, follower, cleanup := newCluster3(t)
+	defer cleanup()
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"nodeID": "node4", "state": "Follower"})
+	}))
+	defer stub.Close()
+	stubAddr := strings.TrimPrefix(stub.URL, "http://")
+
+	joinBody, _ := json.Marshal(map[string]string{
+		"id": "node4", "addr": "127.0.0.1:7304", "httpAddr": stubAddr,
+	})
+	resp, err := http.Post(srv.URL+"/cluster/join", "application/json", bytes.NewReader(joinBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /cluster/join status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// The follower's FSM should have received the AddPeer via replication.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if follower.PeerHTTPAddrs()["node4"] == stubAddr {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("follower PeerHTTPAddrs = %v, want node4=%s", follower.PeerHTTPAddrs(), stubAddr)
 }
