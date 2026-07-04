@@ -93,8 +93,14 @@ func (c *Config) validate() error {
 	if c.RaftAddr == "" || c.HTTPAddr == "" || c.DataDir == "" {
 		return fmt.Errorf("raftAddr, httpAddr, dataDir are required")
 	}
-	if len(c.Peers) != 3 {
-		return fmt.Errorf("peers must have exactly 3 entries, got %d", len(c.Peers))
+	// peers 数量不硬编码到 3：允许 1（单节点 bootstrap/recover）/3/5… 任意非空
+	// 拓扑，联合引导本身面向 3 节点但不在此强制。NodeID 必须在 peers 中，否则
+	// 重定向/状态扇出时找不到自身，排障困难。
+	if len(c.Peers) < 1 {
+		return fmt.Errorf("peers must have at least 1 entry, got %d", len(c.Peers))
+	}
+	if _, err := c.FindSelf(); err != nil {
+		return err
 	}
 	if c.Snapshot.Type == "" {
 		return fmt.Errorf("snapshot.type is required")
