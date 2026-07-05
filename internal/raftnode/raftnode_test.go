@@ -146,6 +146,56 @@ func TestBoltDBPersistenceRoundtrip(t *testing.T) {
 	t.Fatalf("persisted data lost after restart: got %q", v)
 }
 
+// TestNodeMembershipTimeoutFromConfig verifies the configured
+// raft.membershipTimeout flows onto the Node (used by AddVoter/RemoveServer).
+// Note: raft's timeout param is the ENQUEUE timeout (waiting for the leader's
+// applyCh to accept the config change), not a completion timeout — so it is
+// not deterministically observable via a committing scenario; we assert the
+// wiring instead.
+func TestNodeMembershipTimeoutFromConfig(t *testing.T) {
+	log := hclog.NewNullLogger()
+	cfg := &config.Config{
+		NodeID:   "n1",
+		RaftAddr: "127.0.0.1:7901",
+		HTTPAddr: "127.0.0.1:8901",
+		DataDir:  "",
+		Peers:    []config.Peer{{ID: "n1", Addr: "127.0.0.1:7901", HTTPAddr: "127.0.0.1:8901"}},
+		Snapshot:          config.SnapshotConfig{Type: "inmem"},
+		UseInmemTransport: true,
+	}
+	cfg.Raft.MembershipTimeout = config.Duration(42 * time.Millisecond)
+	n, err := New(cfg, fsm.New(), log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer n.Shutdown()
+	if n.membershipTimeout != 42*time.Millisecond {
+		t.Fatalf("membershipTimeout = %v, want 42ms", n.membershipTimeout)
+	}
+}
+
+// TestNodeMembershipTimeoutDefaultsTo5s verifies the default when unset.
+func TestNodeMembershipTimeoutDefaultsTo5s(t *testing.T) {
+	log := hclog.NewNullLogger()
+	cfg := &config.Config{
+		NodeID:   "n1",
+		RaftAddr: "127.0.0.1:7902",
+		HTTPAddr: "127.0.0.1:8902",
+		DataDir:  "",
+		Peers:    []config.Peer{{ID: "n1", Addr: "127.0.0.1:7902", HTTPAddr: "127.0.0.1:8902"}},
+		Snapshot:          config.SnapshotConfig{Type: "inmem"},
+		UseInmemTransport: true,
+	}
+	n, err := New(cfg, fsm.New(), log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer n.Shutdown()
+	if n.membershipTimeout != 5*time.Second {
+		t.Fatalf("default membershipTimeout = %v, want 5s", n.membershipTimeout)
+	}
+}
+
 // TestBootstrapClusterRejectsNodeIDNotInPeers verifies that bootstrapping a
 // cluster when the local nodeID is not among the configured peers is rejected
 // up front with a clear error. A bootstrap node must be a voter in the

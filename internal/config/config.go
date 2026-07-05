@@ -39,6 +39,7 @@ type RaftConfig struct {
 	ApplyTimeout      Duration `yaml:"applyTimeout"`      // 写 raft.Apply 超时；空=5s
 	SnapshotInterval  Duration `yaml:"snapshotInterval"`  // 快照检测间隔；空=10m
 	SnapshotThreshold uint64   `yaml:"snapshotThreshold"` // 快照日志条数阈值；空=1024
+	MembershipTimeout Duration `yaml:"membershipTimeout"` // AddVoter/RemoveServer 超时；空=5s
 }
 
 // DebugConfig configures the isolated pprof debug server. Addr empty → pprof off.

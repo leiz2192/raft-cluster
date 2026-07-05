@@ -28,7 +28,7 @@
 - `peers`：3 节点 voter 列表（联合引导用，各节点回环地址 + 同一 raft 端口）
 - `snapshot.type`：快照存储后端（`file` | `inmem`）。`file` 时快照落 `<snapshot.path>/snapshots/`（raft 总会再建一层 `snapshots/` 子目录）；`snapshot.path` 空 → 用 `dataDir`，即 `<dataDir>/snapshots/`
 - `logStore.type`：raft log/stable store 后端（`inmem` | `boltdb` | `rocksdb`(预留)）；留空则按 `dataDir` 自动选（有 `dataDir`=`boltdb`，无=`inmem`）
-- `raft`：raft 时序/阈值。`applyTimeout`（写 Apply 超时，Duration 如 `5s`，空=5s）、`snapshotInterval`（快照检测间隔，Duration 如 `10m`，空=10m）、`snapshotThreshold`（快照日志条数阈值，空=1024）
+- `raft`：raft 时序/阈值。`applyTimeout`（写 Apply 超时，Duration 如 `5s`，空=5s）、`snapshotInterval`（快照检测间隔，Duration 如 `10m`，空=10m）、`snapshotThreshold`（快照日志条数阈值，空=1024）、`membershipTimeout`（`AddVoter`/`RemoveServer` 入队超时，Duration 如 `5s`，空=5s）
 - `log`：业务日志。`file` 空 → 写 stderr（旧行为）；设了 `file` → 落文件并按 lumberjack 轮转。`maxSize` 支持 Size 写法（`100MB`/`1GB`，二进制 KB=1024，空=100MB）；`maxBackups` 份数（空=7）；`maxAge` 天（空=30）；gzip 压缩旧份。`json: true` → JSON，默认 `false`=text。`level` 空=info。raft 自身日志走同一 logger、同文件。
 - `debug.addr`：pprof 调试端口（同端口、各节点回环地址）；空 → 不开
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoad(t *testing.T) {
@@ -66,6 +67,37 @@ snapshot:
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for 0 peers, got nil")
+	}
+}
+
+// TestLoadParsesMembershipTimeout verifies raft.membershipTimeout parses as a
+// Duration (e.g. "15s"). Empty defaults to 0, defaulted to 5s in raftnode.New.
+func TestLoadParsesMembershipTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "node1.yaml")
+	content := `
+nodeID: node1
+raftAddr: 127.0.0.1:7001
+httpAddr: 127.0.0.1:8001
+dataDir: ./data/node1
+peers:
+  - id: node1
+    addr: 127.0.0.1:7001
+snapshot:
+  type: file
+  path: ./data/node1/snapshots
+raft:
+  membershipTimeout: 15s
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Raft.MembershipTimeout.D(); got != 15*time.Second {
+		t.Fatalf("membershipTimeout = %v, want 15s", got)
 	}
 }
 

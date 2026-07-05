@@ -22,8 +22,9 @@ type Node struct {
 	logs        raft.LogStore
 	stable      raft.StableStore
 	storeCloser io.Closer // non-nil when the log/stable backend holds resources (e.g. BoltDB); closed on Shutdown
-	snaps       raft.SnapshotStore
-	logger      hclog.Logger
+	snaps             raft.SnapshotStore
+	membershipTimeout time.Duration // for AddVoter/RemoveServer; default 5s
+	logger            hclog.Logger
 }
 
 // New constructs a Node. Transport and persistence are decoupled:
@@ -88,6 +89,12 @@ func New(cfg *config.Config, f *fsm.FSM, logger hclog.Logger) (*Node, error) {
 	}
 	n.snaps = snaps
 
+	// AddVoter/RemoveServer 超时可配（cfg.Raft.MembershipTimeout），空=5s。
+	n.membershipTimeout = 5 * time.Second
+	if d := cfg.Raft.MembershipTimeout.D(); d > 0 {
+		n.membershipTimeout = d
+	}
+
 	r, err := raft.NewRaft(raftCfg, f, n.logs, n.stable, n.snaps, n.trans)
 	if err != nil {
 		return nil, fmt.Errorf("new raft: %w", err)
@@ -137,12 +144,12 @@ func (n *Node) Stats() map[string]string {
 }
 
 func (n *Node) AddVoter(id, addr string) error {
-	fut := n.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 5*time.Second)
+	fut := n.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, n.membershipTimeout)
 	return fut.Error()
 }
 
 func (n *Node) RemoveServer(id string) error {
-	fut := n.raft.RemoveServer(raft.ServerID(id), 0, 5*time.Second)
+	fut := n.raft.RemoveServer(raft.ServerID(id), 0, n.membershipTimeout)
 	return fut.Error()
 }
 
